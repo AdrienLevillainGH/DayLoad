@@ -20,6 +20,15 @@ const TOKEN = `${REGION}/oauth2/token`;
 const SCOPE = "openid mcp.tools offline_access";
 const PROTOCOL = "2025-06-18";
 
+/* Only these sports are pulled from COROS. Codes from the tool's own list:
+   100 road run, 101 indoor run, 102 trail run, 103 track run, 104 hike,
+   200 outdoor bike, 201 indoor bike, 202 e-bike, 203 gravel, 204 MTB,
+   205 mountain e-bike, 299 helmet bike.
+   Climbing, strength and everything else is logged by hand in DayLoad, so
+   asking for it here would only fill the preview with rows to skip.
+   Use [65535] for every sport. */
+const SPORTS = [100, 101, 102, 103, 104, 200, 201, 202, 203, 204, 205, 299];
+
 const KEY = "dayload:coros";
 const PENDING = "dayload:coros:pending";
 
@@ -263,7 +272,7 @@ const yyyymmdd = (d) =>
    one listing call and a detail call per new run.
 
    onProgress(text) is called as it goes, for the button label. */
-export async function sync({ days = 30, known = new Set(), max = 25, limit = 500, onProgress = () => {} } = {}) {
+export async function sync({ days = 30, known = new Set(), skipSports = new Set(), max = 50, limit = 500, onProgress = () => {} } = {}) {
   const end = new Date();
   const start = new Date();
   start.setDate(start.getDate() - days);
@@ -275,7 +284,7 @@ export async function sync({ days = 30, known = new Set(), max = 25, limit = 500
     startDate: yyyymmdd(start),
     endDate: yyyymmdd(end),
     limit,
-    sportTypeCodes: [65535],
+    sportTypeCodes: SPORTS,
     locationKeyword: "",
     maxAveragePace: "",
     minDistanceKm: 0,
@@ -289,7 +298,11 @@ export async function sync({ days = 30, known = new Set(), max = 25, limit = 500
   let m;
   while ((m = re.exec(listing)) !== null) found.push({ labelId: m[1], sportType: Number(m[2]) });
 
-  const wanted = found.filter((a) => !known.has(a.labelId)).slice(0, max);
+  // sport types the mapping sends to "skip" are never imported, so they would
+  // otherwise queue for detail on every single sync and block everything else
+  const wanted = found
+    .filter((a) => !known.has(a.labelId) && !skipSports.has(a.sportType))
+    .slice(0, max);
 
   const parts = [listing];
   let done = 0;
