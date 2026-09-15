@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 import { store } from "./storage.js";
+import { isConnected, connect, disconnect, sync as corosSync } from "./coros.js";
 
 /* ================================================================== */
 /* helpers                                                            */
@@ -2575,15 +2576,20 @@ function FormulaCheck({ expr }) {
 
 function CorosImport({ data, update }) {
   const [paste, setPaste] = useState("");
+  const [linked, setLinked] = useState(isConnected());
+  const [busy, setBusy] = useState("");
+  const [trouble, setTrouble] = useState("");
+  const days = data.settings?.corosDays || 30;
   const [read, setRead] = useState(null);
   const [map, setMap] = useState({});
   const [done, setDone] = useState("");
   const [redo, setRedo] = useState(false);
 
-  const doRead = () => {
+  const doRead = (src) => {
+    const text = typeof src === "string" ? src : paste;
     setDone("");
-    const entries = parseCorosList(paste);
-    const details = parseCorosDetail(paste);
+    const entries = parseCorosList(text);
+    const details = parseCorosDetail(text);
     const merged = entries.map((e) => ({ ...e, values: { ...e.values } }));
     let matched = 0, orphan = 0;
     const unmapped = [];
@@ -2657,10 +2663,57 @@ function CorosImport({ data, update }) {
     setPaste("");
   };
 
+  const doSync = async () => {
+    setTrouble(""); setDone(""); setBusy("Starting…");
+    try {
+      const known = new Set((data.sessions || []).map((s) => s.corosLabelId).filter(Boolean));
+      const r = await corosSync({ days, known, onProgress: setBusy });
+      setPaste(r.text);
+      doRead(r.text);
+      if (!r.total) setTrouble(`No activities in the last ${days} days.`);
+    } catch (e) {
+      setTrouble(e.message || String(e));
+      if (/not connected|connect again/i.test(e.message || "")) setLinked(isConnected());
+    } finally {
+      setBusy("");
+    }
+  };
+
   return (
     <div className="space-y-3">
+      <div className="space-y-2 rounded-xl border dl-line p-3">
+        {linked ? (
+          <>
+            <div className="flex items-center gap-2">
+              <button onClick={doSync} disabled={Boolean(busy)}
+                className="dl-accent flex-1 rounded-xl py-3 text-sm font-medium disabled:opacity-60">
+                {busy || `Sync last ${days} days`}
+              </button>
+              <button onClick={() => { disconnect(); setLinked(false); }}
+                className="rounded-xl border dl-line px-3 py-3 text-sm dl-muted">Unlink</button>
+            </div>
+            <div className="flex items-center gap-2 text-xs dl-faint">
+              <span>Look back</span>
+              <input type="number" min="1" max="365" className={smallInput + " w-20"} value={days}
+                onChange={(e) => update({ settings: { ...data.settings, corosDays: Math.max(1, Number(e.target.value) || 30) } })} />
+              <span>days · activities already here are left alone</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <button onClick={() => connect().catch((e) => setTrouble(e.message))}
+              className="dl-accent w-full rounded-xl py-3 text-sm font-medium">Connect COROS</button>
+            <p className="text-xs dl-faint">
+              Opens COROS to sign in. DayLoad only ever reads your activities, and the
+              connection lives in this browser — link each device once.
+            </p>
+          </>
+        )}
+        {trouble && <div className="text-xs" style={{ color: "#e06c6c" }}>{trouble}</div>}
+      </div>
+
       <p className="text-xs dl-faint">
-        Paste the Sport Records listing and any activity detail blocks together. Detail blocks
+        Or paste the Sport Records listing and any activity detail blocks together. Detail blocks
         are matched on time and distance, or on a <span className="tabular-nums">### labelId sportType</span> line if you add one.
       </p>
       <textarea className={`${inputCls} h-40 font-mono`} placeholder="Sport Records — …"
