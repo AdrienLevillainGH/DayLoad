@@ -2611,10 +2611,15 @@ function CorosImport({ data, update }) {
     });
     setMap(guess);
     const known = new Set((data.sessions || []).map((s) => s.corosLabelId).filter(Boolean));
+    const detailed = new Set((data.sessions || [])
+      .filter((s) => s.corosLabelId && s.coros && s.coros.detail)
+      .map((s) => s.corosLabelId));
     setRead({
       entries: merged, codes, matched, orphan, unmapped,
       fresh: merged.filter((e) => !known.has(e.labelId)).length,
       again: merged.filter((e) => known.has(e.labelId)).length,
+      // already here, but detail has just arrived for them
+      refill: merged.filter((e) => e.detail && known.has(e.labelId) && !detailed.has(e.labelId)).length,
     });
   };
 
@@ -2638,7 +2643,8 @@ function CorosImport({ data, update }) {
       const clean = {};
       Object.keys(e.values).forEach((k) => { if (!bad(e.values[k])) clean[k] = e.values[k]; });
       const old = byId[e.labelId];
-      if (old && !redo) { skipped++; continue; }
+      const newDetail = Boolean(e.detail) && !(old && old.coros && old.coros.detail);
+      if (old && !redo && !newDetail) { skipped++; continue; }
       if (old) {
         updated++;
         // Coros owns its own fields; sliders, title, notes and boxes are yours
@@ -2666,10 +2672,13 @@ function CorosImport({ data, update }) {
   const doSync = async () => {
     setTrouble(""); setDone(""); setBusy("Starting…");
     try {
-      // with "also refresh" ticked, refetch detail for activities already here
+      // skip activities whose detail block we already hold — not merely the
+      // ones that exist, or a second sync would fetch nothing at all
       const known = redo
         ? new Set()
-        : new Set((data.sessions || []).map((s) => s.corosLabelId).filter(Boolean));
+        : new Set((data.sessions || [])
+            .filter((s) => s.corosLabelId && s.coros && s.coros.detail)
+            .map((s) => s.corosLabelId));
       const r = await corosSync({ days, known, onProgress: setBusy });
       setPaste(r.text);
       doRead(r.text);
@@ -2731,7 +2740,7 @@ function CorosImport({ data, update }) {
           className="flex-1 rounded-xl border dl-line py-3 text-sm">Read</button>
         {read && read.entries.length > 0 && (
           <button onClick={doImport} className="dl-accent flex-1 rounded-xl py-3 text-sm font-medium">
-            Import {redo ? read.entries.length : read.fresh}
+            Import {redo ? read.entries.length : read.fresh + (read.refill || 0)}
           </button>
         )}
       </div>
@@ -2751,7 +2760,7 @@ function CorosImport({ data, update }) {
           )}
           <div className="dl-muted">
             {read.entries.length} activities · {read.fresh} new · {read.again} already here ·
-            {" "}{read.matched} with detail{read.orphan ? ` · ${read.orphan} detail block(s) unmatched` : ""}
+            {" "}{read.matched} with detail{read.refill ? ` · ${read.refill} filling in` : ""}{read.orphan ? ` · ${read.orphan} unmatched` : ""}
           </div>
           {read.codes.map((c) => (
             <div key={c} className="flex items-center gap-2">
