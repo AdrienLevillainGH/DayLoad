@@ -2666,7 +2666,10 @@ function CorosImport({ data, update }) {
   const doSync = async () => {
     setTrouble(""); setDone(""); setBusy("Starting…");
     try {
-      const known = new Set((data.sessions || []).map((s) => s.corosLabelId).filter(Boolean));
+      // with "also refresh" ticked, refetch detail for activities already here
+      const known = redo
+        ? new Set()
+        : new Set((data.sessions || []).map((s) => s.corosLabelId).filter(Boolean));
       const r = await corosSync({ days, known, onProgress: setBusy });
       setPaste(r.text);
       doRead(r.text);
@@ -2694,7 +2697,7 @@ function CorosImport({ data, update }) {
             </div>
             <div className="flex items-center gap-2 text-xs dl-faint">
               <span>Look back</span>
-              <input type="number" min="1" max="1000" className={smallInput + " w-20"} value={days}
+              <input type="number" min="1" max="365" className={smallInput + " w-20"} value={days}
                 onChange={(e) => update({ settings: { ...data.settings, corosDays: Math.max(1, Number(e.target.value) || 30) } })} />
               <span>days · activities already here are left alone</span>
             </div>

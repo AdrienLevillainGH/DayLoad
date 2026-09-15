@@ -263,19 +263,25 @@ const yyyymmdd = (d) =>
    one listing call and a detail call per new run.
 
    onProgress(text) is called as it goes, for the button label. */
-export async function sync({ days = 30, known = new Set(), max = 25, onProgress = () => {} } = {}) {
+export async function sync({ days = 30, known = new Set(), max = 25, limit = 500, onProgress = () => {} } = {}) {
   const end = new Date();
   const start = new Date();
   start.setDate(start.getDate() - days);
 
   onProgress("Reading your activity list…");
+  // every filter is required even when unused, and `limit` defaults to 20 —
+  // leave it out and a 700-day window still returns 20 activities
   const listing = await callTool("querySportRecords", {
     startDate: yyyymmdd(start),
     endDate: yyyymmdd(end),
+    limit,
     sportTypeCodes: [65535],
-    keyword: "",
-    minDistance: 0,
-    maxDistance: 1000,
+    locationKeyword: "",
+    maxAveragePace: "",
+    minDistanceKm: 0,
+    maxDistanceKm: 100000,
+    minDurationMinutes: 0,
+    maxDurationMinutes: 100000,
   });
 
   const found = [];
