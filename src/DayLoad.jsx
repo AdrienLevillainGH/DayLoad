@@ -2694,7 +2694,7 @@ function CorosImport({ data, update }) {
             </div>
             <div className="flex items-center gap-2 text-xs dl-faint">
               <span>Look back</span>
-              <input type="number" min="1" max="365" className={smallInput + " w-20"} value={days}
+              <input type="number" min="1" max="1000" className={smallInput + " w-20"} value={days}
                 onChange={(e) => update({ settings: { ...data.settings, corosDays: Math.max(1, Number(e.target.value) || 30) } })} />
               <span>days · activities already here are left alone</span>
             </div>
