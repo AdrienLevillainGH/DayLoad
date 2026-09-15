@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* the app paints its own background through the theme variables */
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
