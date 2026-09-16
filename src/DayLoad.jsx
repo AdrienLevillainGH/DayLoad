@@ -7,7 +7,9 @@ import {
   CalendarDays, BarChart3, Settings2, Save, Star, CopyPlus, Bookmark,
 } from "lucide-react";
 
-import { store } from "./storage.js";
+import { store, subscribe as onSync, syncStatus } from "./storage.js";
+import { nowISO } from "./merge.js";
+import * as gh from "./github.js";
 import { isConnected, connect, disconnect, sync as corosSync } from "./coros.js";
 
 /* ================================================================== */
@@ -923,9 +925,18 @@ export default function DayLoad() {
 
   if (!data) return <div className="p-8 text-center">Loading your log…</div>;
 
-  const update = (patch) => setData((d) => ({ ...d, ...patch }));
+  // every whole-object change carries a stamp, so the merge between two
+  // devices can tell which copy is newer
+  const update = (patch) => setData((d) => {
+    const stamps = { ...(d.stamps || {}) };
+    for (const k of ["settings", "types", "templates"]) {
+      if (k in patch) stamps[k] = nowISO();
+    }
+    return { ...d, ...patch, stamps };
+  });
 
-  const saveSession = (s) => {
+  const saveSession = (raw) => {
+    const s = { ...raw, updatedAt: nowISO() };
     setData((d) => {
       const exists = d.sessions.some((x) => x.id === s.id);
       const sessions = exists ? d.sessions.map((x) => (x.id === s.id ? s : x)) : [...d.sessions, s];
@@ -935,7 +946,14 @@ export default function DayLoad() {
     setSheet(null);
   };
 
-  const deleteSession = (id) => setData((d) => ({ ...d, sessions: d.sessions.filter((x) => x.id !== id) }));
+  // a delete has to be recorded, not just applied: another device holding
+  // an older copy would otherwise put the session back on the next merge
+  const deleteSession = (id) =>
+    setData((d) => ({
+      ...d,
+      sessions: d.sessions.filter((x) => x.id !== id),
+      graveyard: [...(d.graveyard || []).filter((g) => g.id !== id), { id, at: nowISO() }],
+    }));
 
   const addTemplate = (s) =>
     setData((d) => ({
@@ -947,7 +965,7 @@ export default function DayLoad() {
     }));
 
   const toggleFav = (id) =>
-    setData((d) => ({ ...d, sessions: d.sessions.map((x) => (x.id === id ? { ...x, fav: !x.fav } : x)) }));
+    setData((d) => ({ ...d, sessions: d.sessions.map((x) => (x.id === id ? { ...x, fav: !x.fav, updatedAt: nowISO() } : x)) }));
 
   const pages = [
     { id: "calendar", label: "Calendar", icon: CalendarDays },
@@ -2546,6 +2564,11 @@ function Parameters({ data, update }) {
       </Section>
 
       <div className="mb-2 mt-5 px-1 text-xs uppercase tracking-wide dl-faint">Data</div>
+      <Section title="Sync" hint="this device and the repo"
+        open={section === "sync"} onToggle={() => setSection(section === "sync" ? null : "sync")}>
+        <SyncPanel />
+      </Section>
+
       <Section title="Coros import" hint="paste from the connector"
         open={section === "coros"} onToggle={() => setSection(section === "coros" ? null : "coros")}>
         <CorosImport data={data} update={update} />
@@ -2777,6 +2800,123 @@ function CorosImport({ data, update }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* sync panel: the token for this device, and what the repo is doing   */
+/* ================================================================== */
+
+function SyncPanel() {
+  const [cfg, setCfg] = useState(gh.config());
+  const [status, setStatus] = useState(syncStatus());
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState(null);
+  const [run, setRun] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => onSync(setStatus), []);
+
+  const save = (patch) => setCfg(gh.setConfig(patch));
+
+  const verify = async () => {
+    setChecking(true);
+    setChecked(null);
+    try {
+      const r = await gh.check();
+      setChecked({ ok: true, text: `${r.name}${r.private ? " (private)" : " — WARNING: this repo is public"}` });
+      await store.syncNow();
+    } catch (e) {
+      setChecked({ ok: false, text: e.message });
+    }
+    setChecking(false);
+  };
+
+  // fire the workflow, then watch it until it finishes
+  const pullFromCoros = async () => {
+    setBusy(true);
+    try {
+      await gh.runSync({ lookbackDays: 30, maxDetails: 25 });
+      setRun({ status: "queued" });
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const r = await gh.lastRun();
+        setRun(r);
+        if (r && r.status === "completed") break;
+      }
+    } catch (e) {
+      setRun({ status: "completed", conclusion: "failure", error: e.message });
+    }
+    setBusy(false);
+  };
+
+  const light =
+    status.state === "synced" ? "#4ADE80" :
+    status.state === "syncing" ? "#FACC15" :
+    status.state === "error" ? "#F2546B" : "#94A3B8";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="inline-block h-2 w-2 rounded-full" style={{ background: light }} />
+        <span className="dl-muted">
+          {status.state === "synced" && `Up to date${status.pending ? ", saving…" : ""}`}
+          {status.state === "syncing" && "Syncing…"}
+          {status.state === "offline" && "Not linked — this device keeps its own copy"}
+          {status.state === "error" && status.error}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        <label className="block text-xs dl-faint">GitHub account</label>
+        <input className={inputCls} placeholder="your github username" value={cfg.owner}
+          onChange={(e) => save({ owner: e.target.value.trim() })} />
+
+        <label className="block text-xs dl-faint">Data repo</label>
+        <input className={inputCls} placeholder="dayload-data" value={cfg.repo}
+          onChange={(e) => save({ repo: e.target.value.trim() })} />
+
+        <label className="block text-xs dl-faint">Token for this device</label>
+        <input className={inputCls} type="password" placeholder="github_pat_…"
+          value={cfg.token} onChange={(e) => save({ token: e.target.value.trim() })} />
+        <p className="text-xs dl-faint">
+          Fine-grained token, this repo only, Contents and Actions set to read and write.
+          It stays in this browser and is never sent anywhere but GitHub.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button onClick={verify} disabled={checking}
+          className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
+          {checking ? "Checking…" : "Check and sync"}
+        </button>
+        <button onClick={() => store.syncNow()}
+          className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
+          Sync now
+        </button>
+        <button onClick={pullFromCoros} disabled={busy || !gh.isLinked()}
+          className="dl-accent rounded-xl px-3 py-2 text-sm font-medium">
+          {busy ? "Asking COROS…" : "Fetch from COROS"}
+        </button>
+      </div>
+
+      {checked && (
+        <p className="text-xs" style={{ color: checked.ok ? undefined : "#F2546B" }}>{checked.text}</p>
+      )}
+
+      {run && (
+        <p className="text-xs dl-faint">
+          {run.status !== "completed" && "The robot is talking to COROS…"}
+          {run.status === "completed" && run.conclusion === "success" && "COROS run finished. New activities land in the repo; import them below."}
+          {run.status === "completed" && run.conclusion !== "success" && `COROS run failed. ${run.error || ""}`}
+        </p>
+      )}
+
+      <button onClick={() => { gh.forgetDevice(); setCfg(gh.config()); }}
+        className="text-xs" style={{ color: "#F2546B" }}>
+        Forget this device
+      </button>
     </div>
   );
 }
