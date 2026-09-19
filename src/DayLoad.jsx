@@ -39,15 +39,46 @@ const withHours = (mins) => `${round(mins, 0)} min (${asHours(mins)})`;
 /* look and feel — add entries to these tables to offer more choices  */
 /* ================================================================== */
 
+/* One dominant hue, stepped surfaces, and a single accent from a
+   distant part of the wheel. `mode` drives the native widgets (date
+   pickers, scrollbars); everything else is these tokens. Adding a
+   theme is adding one row. */
 const THEMES = {
-  dark:  { label: "Dark",  bg: "#000000", surface: "#0B0B0B", field: "#000000", line: "#262626", text: "#FFFFFF", muted: "#B4B4B4", faint: "#7A7A7A", accentBg: "#FFFFFF", accentText: "#000000", grid: "#1C1C1C" },
-  light: { label: "Light", bg: "#FFFFFF", surface: "#F6F6F4", field: "#FFFFFF", line: "#E3E3DE", text: "#141414", muted: "#4B4B4B", faint: "#8A8A85", accentBg: "#141414", accentText: "#FFFFFF", grid: "#EAEAE6" },
+  dark:   { label: "Dark",   mode: "dark",  bg: "#000000", surface: "#0B0B0B", field: "#000000", line: "#262626", text: "#FFFFFF", muted: "#B4B4B4", faint: "#7A7A7A", accentBg: "#FFFFFF", accentText: "#000000", grid: "#1C1C1C" },
+  light:  { label: "Light",  mode: "light", bg: "#FFFFFF", surface: "#F6F6F4", field: "#FFFFFF", line: "#E3E3DE", text: "#141414", muted: "#4B4B4B", faint: "#8A8A85", accentBg: "#141414", accentText: "#FFFFFF", grid: "#EAEAE6" },
+
+  /* black, acid-lime sun */
+  midnight:    { label: "Midnight",    mode: "dark", bg: "#07070B", surface: "#101019", field: "#07070B", line: "#26263A", text: "#F2F2FF", muted: "#A9A9C4", faint: "#6E6E8C", accentBg: "#C2F53C", accentText: "#0A0A0F", grid: "#1A1A2A" },
+
+  /* black and green, pink sun */
+  eclipse:     { label: "Eclipse",     mode: "dark", bg: "#05080A", surface: "#0D1614", field: "#05080A", line: "#1E2E28", text: "#EAF6F0", muted: "#9FB8AE", faint: "#6B8279", accentBg: "#FF3D6B", accentText: "#FFFFFF", grid: "#142220" },
+
+  /* violet and mint */
+  ultraviolet: { label: "Ultraviolet", mode: "dark", bg: "#150B2E", surface: "#1F1142", field: "#150B2E", line: "#33205E", text: "#F3EDFF", muted: "#B9A6E0", faint: "#8470B5", accentBg: "#14E3B2", accentText: "#0B1F1A", grid: "#281652" },
+
+  /* violet-blue and coral */
+  cobalt:      { label: "Cobalt",      mode: "dark", bg: "#090C2A", surface: "#121640", field: "#090C2A", line: "#22285E", text: "#EDF0FF", muted: "#A8B0E0", faint: "#757DB0", accentBg: "#FF4D5E", accentText: "#FFFFFF", grid: "#171C4A" },
+
+  /* the pale ones keep the same accents, against paper */
+  emerald:     { label: "Emerald",     mode: "light", bg: "#F5F2EC", surface: "#FFFFFF", field: "#FFFFFF", line: "#E2DED4", text: "#101613", muted: "#4A5750", faint: "#8A9189", accentBg: "#00A862", accentText: "#FFFFFF", grid: "#E8E4DA" },
+  orchid:      { label: "Orchid",      mode: "light", bg: "#F6F3EF", surface: "#FFFFFF", field: "#FFFFFF", line: "#E4DEE8", text: "#160F1E", muted: "#514860", faint: "#8C8399", accentBg: "#6D28F5", accentText: "#FFFFFF", grid: "#EBE5F0" },
 };
 
 const FONTS = {
-  system: { label: "Neutral", stack: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" },
-  serif:  { label: "Serif",   stack: "ui-serif, Georgia, Cambria, Times New Roman, serif" },
-  mono:   { label: "Mono",    stack: "ui-monospace, SFMono-Regular, Menlo, monospace" },
+  system:   { label: "Neutral",  stack: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" },
+  serif:    { label: "Serif",    stack: "ui-serif, Georgia, Cambria, Times New Roman, serif" },
+  mono:     { label: "Mono",     stack: "ui-monospace, SFMono-Regular, Menlo, monospace" },
+
+  /* Fetched from Google Fonts, and only the selected one is fetched.
+     Every stack keeps a real fallback, so a blocked or offline request
+     degrades to a system face instead of to Times New Roman. */
+  grotesk:  { label: "Grotesk",  google: "Space+Grotesk:wght@400;500;700", stack: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif" },
+  chakra:   { label: "Chakra",   google: "Chakra+Petch:wght@400;500;700",  stack: "'Chakra Petch', ui-sans-serif, system-ui, sans-serif" },
+  rajdhani: { label: "Rajdhani", google: "Rajdhani:wght@400;500;700",      stack: "'Rajdhani', ui-sans-serif, system-ui, sans-serif" },
+  jetbrains:{ label: "JetBrains",google: "JetBrains+Mono:wght@400;500;700",stack: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" },
+  /* wide and unmistakably sci-fi. Fine for headings, punishing across a
+     table of numbers — look at the Summary before keeping it */
+  orbitron: { label: "Orbitron", google: "Orbitron:wght@400;500;700",      stack: "'Orbitron', ui-sans-serif, system-ui, sans-serif" },
 };
 
 const DENSITY = {
@@ -60,7 +91,7 @@ const theme = (settings) => THEMES[settings?.theme] || THEMES.dark;
 function ThemeStyle({ settings }) {
   const t = theme(settings);
   const f = FONTS[settings?.font] || FONTS.system;
-  const css = `
+  const css = `${f.google ? `@import url('https://fonts.googleapis.com/css2?family=${f.google}&display=swap');` : ""}
 .dl-root{--bg:${t.bg};--surface:${t.surface};--field:${t.field};--line:${t.line};--text:${t.text};--muted:${t.muted};--faint:${t.faint};--abg:${t.accentBg};--atext:${t.accentText};font-family:${f.stack};}
 .dl-bg{background:var(--bg);}
 .dl-surface{background:var(--surface);}
@@ -71,7 +102,7 @@ function ThemeStyle({ settings }) {
 .dl-line{border-color:var(--line);}
 .dl-accent{background:var(--abg);color:var(--atext);}
 .dl-root input,.dl-root textarea,.dl-root select{color:var(--text);}
-.dl-root input[type=date]{color-scheme:${settings?.theme === "light" ? "light" : "dark"};}
+.dl-root input[type=date]{color-scheme:${t.mode || "dark"};}
 `;
   return <style>{css}</style>;
 }
@@ -875,6 +906,23 @@ function Note({ text, limit = 220 }) {
   );
 }
 
+/* A collapsible group inside a Section. It keeps its own open state
+   rather than routing through Parameters: these are small preferences,
+   and only one top-level Section is ever open anyway. */
+function SubSection({ title, hint, children, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-xl border dl-line">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left">
+        <span className="flex-1 text-sm dl-muted">{title}</span>
+        {hint ? <span className="text-xs dl-faint">{hint}</span> : null}
+        {open ? <ChevronDown size={14} className="dl-faint" /> : <ChevronRight size={14} className="dl-faint" />}
+      </button>
+      {open && <div className="space-y-3 border-t dl-line p-3">{children}</div>}
+    </div>
+  );
+}
+
 function Section({ title, hint, open, onToggle, children }) {
   return (
     <div className={card}>
@@ -1379,15 +1427,31 @@ function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplat
                       <span className="tabular-nums">{round(v, 1)} {f.unit}</span></div>
                   );
                 })}
-                {slidersOf(root, data.settings, false).map((f) => {
-                  const v = s.sliders?.[f.key];
-                  if (v === null || v === undefined) return null;
-                  return (
-                    <div key={f.key}><span className="dl-faint">{f.short || f.label}: </span>
-                      <span className="tabular-nums">{v.toFixed(1)}</span></div>
-                  );
-                })}
               </div>
+
+              {/* what you felt is not what the watch measured: keeping them in
+                  one grid made an RPE read like a distance */}
+              {(() => {
+                const rows = slidersOf(root, data.settings, false)
+                  .filter((f) => s.sliders?.[f.key] !== null && s.sliders?.[f.key] !== undefined);
+                if (!rows.length) return null;
+                return (
+                  <div className="mt-3 flex flex-wrap gap-1.5 border-t dl-line pt-3">
+                    {rows.map((f) => {
+                      const v = s.sliders[f.key];
+                      const hurt = f.key === "injury" && v > 0;
+                      return (
+                        <span key={f.key}
+                          className="inline-flex items-baseline gap-1 rounded-full border dl-line px-2 py-1 text-xs"
+                          style={hurt ? { borderColor: "#F2546B", color: "#F2546B" } : undefined}>
+                          <span className={hurt ? "" : "dl-faint"}>{f.short || f.label}</span>
+                          <span className="tabular-nums font-medium">{v.toFixed(1)}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {(s.boxes || []).length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1">
@@ -2033,10 +2097,30 @@ function Panel({ active, payload, label, th }) {
 /* C. parameters                                                      */
 /* ================================================================== */
 
-const PALETTE = [
-  "#FF5C5C", "#FF6B3D", "#F2A23C", "#F2C230", "#C9D14A", "#9BCB5B", "#4ED9B4",
-  "#35C3D6", "#3FA9E0", "#6C8BE0", "#B57BE0", "#E07BC8", "#F2546B", "#D4D4D4",
-];
+/* Two sets to pick activity colours from. Switching set only changes
+   what the picker offers: a colour already given to an activity lives
+   on that activity and is never rewritten. */
+const PALETTES = {
+  soft: {
+    label: "Soft",
+    colors: [
+      "#FF5C5C", "#FF6B3D", "#F2A23C", "#F2C230", "#C9D14A", "#9BCB5B", "#4ED9B4",
+      "#35C3D6", "#3FA9E0", "#6C8BE0", "#B57BE0", "#E07BC8", "#F2546B", "#D4D4D4",
+    ],
+  },
+  neon: {
+    label: "Neon",
+    colors: [
+      "#FF2D6F", "#FF4D3D", "#FF8A00", "#FFC400", "#C2F53C", "#4BE37A", "#00D68F",
+      "#14E3B2", "#00C2FF", "#3B35F5", "#6D28F5", "#B14DFF", "#FF2D9B", "#8E97A8",
+    ],
+  },
+};
+
+const paletteOf = (settings) => (PALETTES[settings?.palette] || PALETTES.soft).colors;
+
+// for anywhere a default colour is needed with no settings to hand
+const PALETTE = PALETTES.soft.colors;
 
 function Parameters({ data, update }) {
   const [section, setSection] = useState(null);
@@ -2229,7 +2313,7 @@ function Parameters({ data, update }) {
                 <div>
                   <div className="mb-2 text-sm dl-muted">Colour</div>
                   <div className="flex flex-wrap gap-2">
-                    {PALETTE.map((c) => (
+                    {paletteOf(settings).map((c) => (
                       <button key={c} onClick={() => editNode(t.id, [], (x) => ({ ...x, color: c }))}
                         className="h-8 w-8 rounded-full border-2"
                         style={{ background: c, borderColor: t.color === c ? "var(--text)" : "transparent" }} />
@@ -2376,7 +2460,7 @@ function Parameters({ data, update }) {
         ))}
 
         <button
-          onClick={() => update({ types: [...data.types, { id: uid(), name: "New activity", color: PALETTE[data.types.length % PALETTE.length], fields: ["duration"], custom: [], sliders: [], customSliders: [], boxes: [], formulas: [], children: [] }] })}
+          onClick={() => update({ types: [...data.types, { id: uid(), name: "New activity", color: paletteOf(settings)[data.types.length % paletteOf(settings).length], fields: ["duration"], custom: [], sliders: [], customSliders: [], boxes: [], formulas: [], children: [] }] })}
           className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed dl-line py-4 dl-muted">
           <Plus size={18} /> Add an activity
         </button>
@@ -2418,8 +2502,7 @@ function Parameters({ data, update }) {
       <div className="mb-2 mt-5 px-1 text-xs uppercase tracking-wide dl-faint">Calendar & summary</div>
       <Section title="Summary options" hint="what appears there"
         open={section === "summary"} onToggle={() => setSection(section === "summary" ? null : "summary")}>
-        <div>
-          <div className="mb-2 text-sm dl-muted">Periods offered</div>
+        <SubSection title="Periods offered" hint={`${(settings.ranges || []).length} on`}>
           <div className="flex flex-wrap gap-2">
             {RANGES.map((x) => {
               const on = (settings.ranges || []).includes(x.id);
@@ -2431,14 +2514,9 @@ function Parameters({ data, update }) {
               );
             })}
           </div>
-        </div>
+        </SubSection>
 
-        <p className="text-xs dl-faint">
-          Which metrics exist, and in what order, is set in Variables &amp; sliders.
-        </p>
-
-        <div>
-          <div className="mb-2 text-sm dl-muted">Panels shown</div>
+        <SubSection title="Panels shown">
           <div className="flex flex-wrap gap-2">
             <Chip small on={settings.showStats !== false} onClick={() => setSettings({ showStats: settings.showStats === false })}>
               Total / mean figures
@@ -2454,13 +2532,16 @@ function Parameters({ data, update }) {
             </Chip>
           </div>
           <p className="mt-2 text-xs dl-faint">The first three apply to the calendar as well.</p>
-        </div>
+        </SubSection>
+
+        <p className="text-xs dl-faint">
+          Which metrics exist, and in what order, is set in Variables &amp; sliders.
+        </p>
       </Section>
 
       <Section title="Variables & sliders" hint="order, muting, slider display"
         open={section === "vars"} onToggle={() => setSection(section === "vars" ? null : "vars")}>
-        <div>
-          <div className="mb-2 text-sm dl-muted">Order and muting</div>
+        <SubSection title="Metrics" hint="order and muting">
           {(settings.fieldOrder || Object.keys(FIELDS)).map((k, i, arr) => {
             const off = (settings.fieldsOff || []).includes(k);
             return (
@@ -2481,10 +2562,9 @@ function Parameters({ data, update }) {
               </div>
             );
           })}
-        </div>
+        </SubSection>
 
-        <div className="border-t dl-line pt-3">
-          <div className="mb-2 text-sm dl-muted">Sliders</div>
+        <SubSection title="Sliders" hint="order, muting, display">
           {(() => {
             const all = allSliderKeys(data.types);
             const order = settings.sliderOrder || all.map((x) => x.key);
@@ -2525,30 +2605,49 @@ function Parameters({ data, update }) {
               Show the description
             </Chip>
           </div>
-        </div>
+        </SubSection>
       </Section>
 
       <Section title="Visual settings"
         hint={`${theme(settings).label.toLowerCase()}, ${(FONTS[settings.font] || FONTS.system).label.toLowerCase()}`}
         open={section === "visual"} onToggle={() => setSection(section === "visual" ? null : "visual")}>
-        <div>
-          <div className="mb-2 text-sm dl-muted">Theme</div>
+        <SubSection title="Theme" hint={theme(settings).label} defaultOpen>
           <div className="flex flex-wrap gap-2">
             {Object.entries(THEMES).map(([k, v]) => (
               <Chip key={k} small on={settings.theme === k} onClick={() => setSettings({ theme: k })}>{v.label}</Chip>
             ))}
           </div>
-        </div>
-        <div>
-          <div className="mb-2 text-sm dl-muted">Typeface</div>
+        </SubSection>
+
+        <SubSection title="Typeface" hint={(FONTS[settings.font] || FONTS.system).label}>
           <div className="flex flex-wrap gap-2">
             {Object.entries(FONTS).map(([k, v]) => (
               <Chip key={k} small on={settings.font === k} onClick={() => setSettings({ font: k })}>{v.label}</Chip>
             ))}
           </div>
-        </div>
-        <div>
-          <div className="mb-2 text-sm dl-muted">Calendar size</div>
+          <p className="text-xs dl-faint">
+            The last five are fetched from Google Fonts the first time you pick them. Orbitron is wide:
+            look at the Summary before keeping it.
+          </p>
+        </SubSection>
+
+        <SubSection title="Activity colours" hint={(PALETTES[settings.palette] || PALETTES.soft).label}>
+          <div className="mb-2 flex flex-wrap gap-2">
+            {Object.entries(PALETTES).map(([k, v]) => (
+              <Chip key={k} small on={(settings.palette || "soft") === k} onClick={() => setSettings({ palette: k })}>{v.label}</Chip>
+            ))}
+          </div>
+          <div className="mb-2 flex flex-wrap gap-1">
+            {paletteOf(settings).map((c) => (
+              <span key={c} className="h-4 w-4 rounded-full" style={{ background: c }} />
+            ))}
+          </div>
+          <p className="text-xs dl-faint">
+            Only changes what the colour picker offers. Activities keep the colour you already gave them.
+          </p>
+        </SubSection>
+
+        <SubSection title="Calendar" hint="size and height">
           <div className="mb-3 flex flex-wrap gap-2">
             <Chip small on={settings.calendarFixed !== false} onClick={() => setSettings({ calendarFixed: true })}>Fixed</Chip>
             <Chip small on={settings.calendarFixed === false} onClick={() => setSettings({ calendarFixed: false })}>Dynamic</Chip>
@@ -2559,8 +2658,8 @@ function Parameters({ data, update }) {
               <Chip key={k} small on={(settings.density || "comfortable") === k} onClick={() => setSettings({ density: k })}>{v.label}</Chip>
             ))}
           </div>
-        </div>
-        <p className="text-xs dl-faint">More themes and typefaces get added in one place: the THEMES and FONTS tables at the top of the file.</p>
+        </SubSection>
+        <p className="text-xs dl-faint">Themes, typefaces and colour sets are three tables at the top of the file: THEMES, FONTS, PALETTES. One row each. Web typefaces are fetched from Google Fonts on first use.</p>
       </Section>
 
       <div className="mb-2 mt-5 px-1 text-xs uppercase tracking-wide dl-faint">Data</div>
@@ -2825,7 +2924,7 @@ function SyncPanel() {
     setChecked(null);
     try {
       const r = await gh.check();
-      setChecked({ ok: true, text: `${r.name}${r.private ? " (private)" : " — WARNING: this repo is public"}` });
+      setChecked({ ok: true, text: `${r.name}${r.private ? " (private)" : " \u2014 WARNING: this repo is public"}` });
       await store.syncNow();
     } catch (e) {
       setChecked({ ok: false, text: e.message });
@@ -2861,9 +2960,9 @@ function SyncPanel() {
       <div className="flex items-center gap-2 text-sm">
         <span className="inline-block h-2 w-2 rounded-full" style={{ background: light }} />
         <span className="dl-muted">
-          {status.state === "synced" && `Up to date${status.pending ? ", saving…" : ""}`}
-          {status.state === "syncing" && "Syncing…"}
-          {status.state === "offline" && "Not linked — this device keeps its own copy"}
+          {status.state === "synced" && `Up to date${status.pending ? ", saving\u2026" : ""}`}
+          {status.state === "syncing" && "Syncing\u2026"}
+          {status.state === "offline" && "Not linked \u2014 this device keeps its own copy"}
           {status.state === "error" && status.error}
         </span>
       </div>
@@ -2878,7 +2977,7 @@ function SyncPanel() {
           onChange={(e) => save({ repo: e.target.value.trim() })} />
 
         <label className="block text-xs dl-faint">Token for this device</label>
-        <input className={inputCls} type="password" placeholder="github_pat_…"
+        <input className={inputCls} type="password" placeholder="github_pat_\u2026"
           value={cfg.token} onChange={(e) => save({ token: e.target.value.trim() })} />
         <p className="text-xs dl-faint">
           Fine-grained token, this repo only, Contents and Actions set to read and write.
@@ -2889,7 +2988,7 @@ function SyncPanel() {
       <div className="flex flex-wrap gap-2">
         <button onClick={verify} disabled={checking}
           className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
-          {checking ? "Checking…" : "Check and sync"}
+          {checking ? "Checking\u2026" : "Check and sync"}
         </button>
         <button onClick={() => store.syncNow()}
           className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
@@ -2897,7 +2996,7 @@ function SyncPanel() {
         </button>
         <button onClick={pullFromCoros} disabled={busy || !gh.isLinked()}
           className="dl-accent rounded-xl px-3 py-2 text-sm font-medium">
-          {busy ? "Asking COROS…" : "Fetch from COROS"}
+          {busy ? "Asking COROS\u2026" : "Fetch from COROS"}
         </button>
       </div>
 
@@ -2907,8 +3006,8 @@ function SyncPanel() {
 
       {run && (
         <p className="text-xs dl-faint">
-          {run.status !== "completed" && "The robot is talking to COROS…"}
-          {run.status === "completed" && run.conclusion === "success" && "COROS run finished. New activities land in the repo; import them below."}
+          {run.status !== "completed" && "The robot is talking to COROS\u2026"}
+          {run.status === "completed" && run.conclusion === "success" && "COROS run finished. New activities land in the repo."}
           {run.status === "completed" && run.conclusion !== "success" && `COROS run failed. ${run.error || ""}`}
         </p>
       )}

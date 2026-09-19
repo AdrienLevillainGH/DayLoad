@@ -133,6 +133,21 @@ async function pushNow() {
   }
 }
 
+/* Closing the tab within the quiet window would otherwise lose the push
+   until next time the app opens. Both events matter: pagehide is the
+   reliable one on iOS, visibilitychange covers switching apps. */
+if (typeof window !== "undefined") {
+  const flush = () => {
+    if (!status.pending || !gh.isLinked()) return;
+    clearTimeout(timer);
+    pushNow(); // fire and forget: the tab may die before it resolves
+  };
+  window.addEventListener("pagehide", flush);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+}
+
 function schedule() {
   if (!gh.isLinked()) return;
   setStatus({ pending: true });
