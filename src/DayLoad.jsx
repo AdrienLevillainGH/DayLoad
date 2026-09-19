@@ -90,6 +90,107 @@ const DENSITY = {
 
 const theme = (settings) => THEMES[settings?.theme] || THEMES.dark;
 
+
+/* ================================================================== */
+/* the mark                                                           */
+/* ================================================================== */
+
+/* Three shapes, six colourways. One function builds an SVG string,
+   which is used both for the previews and for the favicon — drawing it
+   twice would guarantee the two drift apart.
+
+   Note this does NOT change the installed home-screen icon. Android
+   reads that from the manifest at install time and iOS never revisits
+   it. That one is frozen in public/ and chosen once. */
+
+const SKINS = {
+  emerald:  { label: "Emerald",        sky: "#00A362", tints: ["#4FC79A", "#93DCC0", "#FFFFFF"], sun: "#FF3D77" },
+  forest:   { label: "Black & green",  sky: "#101010", tints: ["#0E7A4E", "#22C07E", "#8DF0C2"], sun: "#FF3D6B" },
+  neon:     { label: "Black & violet", sky: "#101010", tints: ["#4B32C9", "#7B5BF0", "#B9A6F5"], sun: "#C2F53C" },
+  violet:   { label: "Violet & mint",  sky: "#7B2BF5", tints: ["#9A6BFF", "#C4A6FF", "#FFFFFF"], sun: "#14E3B2" },
+  indigo:   { label: "Violet-blue",    sky: "#3B35F5", tints: ["#6E6BFF", "#A7A4FF", "#FFFFFF"], sun: "#FF4D5E" },
+  azure:    { label: "Blue & yellow",  sky: "#1E5BF5", tints: ["#6E9BFF", "#B0C8FF", "#FFFFFF"], sun: "#FFC93C" },
+  azurered: { label: "Blue & red",     sky: "#1E5BF5", tints: ["#6E9BFF", "#B0C8FF", "#FFFFFF"], sun: "#FF3D5E" },
+};
+
+/* Traced off the reference artwork, then reduced to the corner points
+   the artwork actually has, so every segment between vertices is dead
+   straight — the originals contain no curves except the sun. Sun
+   position and radius are measured per model and differ; it sits left
+   on the full bleed, where the ridge climbs into the right corner. */
+const LOGO_TYPES = {
+  bleed: {
+    label: "Full bleed", sun: [24, 24, 8.8],
+    draw: (k) => `
+      <polygon points="0,62.7 17,58.7 33.3,63.7 50,51.3 66.3,55.3 83,42 100,41 100,100 0,100" fill="${k.tints[0]}"/>
+      <polygon points="0,81.7 16.3,74 33.3,80 49.7,63.3 66.7,70.3 83,54 100,56.3 100,100 0,100" fill="${k.tints[1]}"/>
+      <polygon points="0,93.3 16.7,86 33.3,95 50,73.7 66.7,87.7 83.3,66.7 100,75 100,100 0,100" fill="${k.tints[2]}"/>`,
+  },
+  two: {
+    label: "Two peaks", sun: [72, 28, 7.7],
+    draw: (k) => `
+      <polygon points="22,68.3 34,47 43.7,56.3 58,37.7 78,69.7 78,75 22,75" fill="${k.tints[0]}"/>
+      <polygon points="20,74 30.7,60.7 42,67 56,51.3 79,74 79,75 20,75" fill="${k.tints[2]}" stroke="${k.sky}" stroke-width="1.5" stroke-linejoin="miter"/>`,
+  },
+  three: {
+    label: "Three peaks", sun: [72, 29, 6.8],
+    draw: (k) => `
+      <polygon points="20.3,71.3 34,47 43.7,56.3 58,37.7 79.7,72.3 79.7,75 20.3,75" fill="${k.tints[0]}"/>
+      <polygon points="19.7,73.3 30.7,59.7 42,66 56,50.3 77.3,71.3 77.3,75 19.7,75" fill="${k.tints[1]}"/>
+      <polygon points="20.3,74.3 32.3,67.7 43.7,71.7 59.3,59.7 80,74.3 80,75 20.3,75" fill="${k.tints[2]}"/>`,
+  },
+};
+
+/* which colourway a theme implies, when the setting is left on auto */
+const THEME_SKIN = {
+  dark: "neon", light: "emerald", midnight: "neon", eclipse: "forest",
+  ultraviolet: "violet", cobalt: "indigo", emerald: "emerald", orchid: "violet",
+};
+
+const skinName = (settings) => {
+  const want = settings?.logoSkin || "auto";
+  if (want !== "auto" && SKINS[want]) return want;
+  return THEME_SKIN[settings?.theme] || "mono";
+};
+
+const logoType = (settings) => (LOGO_TYPES[settings?.logo] ? settings.logo : "bleed");
+
+function logoSVG(settings, { rounded = true } = {}) {
+  const k = SKINS[skinName(settings)];
+  const t = LOGO_TYPES[logoType(settings)];
+  const clip = rounded ? `<clipPath id="r"><rect width="100" height="100" rx="22"/></clipPath>` : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <defs>${clip}</defs>
+    <g ${rounded ? 'clip-path="url(#r)"' : ""}>
+      <rect width="100" height="100" fill="${k.sky}"/>
+      ${t.draw(k)}
+      <circle cx="${t.sun[0]}" cy="${t.sun[1]}" r="${t.sun[2]}" fill="${k.sun}"/>
+    </g>
+  </svg>`;
+}
+
+const logoURI = (settings) =>
+  `data:image/svg+xml,${encodeURIComponent(logoSVG(settings).replace(/\s+/g, " "))}`;
+
+function Logo({ settings, size = 40 }) {
+  return <img src={logoURI(settings)} width={size} height={size} alt="" className="rounded-xl" />;
+}
+
+/* keep the browser tab in step with the choice */
+function Favicon({ settings }) {
+  useEffect(() => {
+    let link = document.querySelector("link[rel='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.type = "image/svg+xml";
+    link.href = logoURI(settings);
+  }, [settings?.logo, settings?.logoSkin, settings?.theme]);
+  return null;
+}
+
 function ThemeStyle({ settings }) {
   const t = theme(settings);
   activePalette = paletteName(settings);
@@ -1027,6 +1128,7 @@ export default function DayLoad() {
   return (
     <div className="dl-root dl-bg dl-text min-h-screen pb-24">
       <ThemeStyle settings={data.settings} />
+      <Favicon settings={data.settings} />
 
       <main className="mx-auto max-w-2xl px-3 py-3">
         {page === "calendar" && (
@@ -2643,6 +2745,48 @@ function Parameters({ data, update }) {
             <Chip small on={settings.sliderHints === true} onClick={() => setSettings({ sliderHints: settings.sliderHints !== true })}>
               Show the description
             </Chip>
+          </div>
+        </SubSection>
+      </Section>
+
+      <Section title="App icon" hint={`${LOGO_TYPES[logoType(settings)].label.toLowerCase()}, ${SKINS[skinName(settings)].label.toLowerCase()}`}
+        open={section === "logo"} onToggle={() => setSection(section === "logo" ? null : "logo")}>
+        <div className="flex items-center gap-3">
+          <Logo settings={settings} size={64} />
+          <p className="flex-1 text-xs dl-faint">
+            Shown in the browser tab. The installed home-screen icon is set at install time and does
+            not follow this — reinstall to change it.
+          </p>
+        </div>
+
+        <SubSection title="Shape" hint={LOGO_TYPES[logoType(settings)].label} defaultOpen>
+          <div className="flex flex-wrap gap-3">
+            {Object.entries(LOGO_TYPES).map(([k, v]) => (
+              <button key={k} onClick={() => setSettings({ logo: k })}
+                className="flex flex-col items-center gap-1">
+                <img src={logoURI({ ...settings, logo: k })} width={52} height={52} alt=""
+                  className="rounded-xl" style={{ outline: logoType(settings) === k ? "2px solid var(--text)" : "none", outlineOffset: 2 }} />
+                <span className="text-xs dl-faint">{v.label}</span>
+              </button>
+            ))}
+          </div>
+        </SubSection>
+
+        <SubSection title="Colours" hint={SKINS[skinName(settings)].label}>
+          <div className="mb-3 flex flex-wrap gap-2">
+            <Chip small on={(settings.logoSkin || "auto") === "auto"} onClick={() => setSettings({ logoSkin: "auto" })}>
+              Follow theme
+            </Chip>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {Object.entries(SKINS).map(([k, v]) => (
+              <button key={k} onClick={() => setSettings({ logoSkin: k })}
+                className="flex flex-col items-center gap-1">
+                <img src={logoURI({ ...settings, logoSkin: k })} width={52} height={52} alt=""
+                  className="rounded-xl" style={{ outline: settings.logoSkin === k ? "2px solid var(--text)" : "none", outlineOffset: 2 }} />
+                <span className="text-xs dl-faint">{v.label}</span>
+              </button>
+            ))}
           </div>
         </SubSection>
       </Section>
