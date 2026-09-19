@@ -44,27 +44,31 @@ const withHours = (mins) => `${round(mins, 0)} min (${asHours(mins)})`;
    pickers, scrollbars); everything else is these tokens. Adding a
    theme is adding one row. */
 const THEMES = {
-  dark:   { label: "Dark",   mode: "dark",  bg: "#000000", surface: "#0B0B0B", field: "#000000", line: "#262626", text: "#FFFFFF", muted: "#B4B4B4", faint: "#7A7A7A", accentBg: "#FFFFFF", accentText: "#000000", grid: "#1C1C1C" },
-  light:  { label: "Light",  mode: "light", bg: "#FFFFFF", surface: "#F6F6F4", field: "#FFFFFF", line: "#E3E3DE", text: "#141414", muted: "#4B4B4B", faint: "#8A8A85", accentBg: "#141414", accentText: "#FFFFFF", grid: "#EAEAE6" },
+  dark:   { label: "Dark",   mode: "dark",  palette: "soft", bg: "#000000", surface: "#0B0B0B", field: "#000000", line: "#262626", text: "#FFFFFF", muted: "#B4B4B4", faint: "#7A7A7A", accentBg: "#FFFFFF", accentText: "#000000", grid: "#1C1C1C" },
+  light:  { label: "Light",  mode: "light", palette: "soft", bg: "#FFFFFF", surface: "#F6F6F4", field: "#FFFFFF", line: "#E3E3DE", text: "#141414", muted: "#4B4B4B", faint: "#8A8A85", accentBg: "#141414", accentText: "#FFFFFF", grid: "#EAEAE6" },
 
   /* black, acid-lime sun */
-  midnight:    { label: "Midnight",    mode: "dark", bg: "#07070B", surface: "#101019", field: "#07070B", line: "#26263A", text: "#F2F2FF", muted: "#A9A9C4", faint: "#6E6E8C", accentBg: "#C2F53C", accentText: "#0A0A0F", grid: "#1A1A2A" },
+  midnight:    { label: "Midnight",    mode: "dark", palette: "neon", bg: "#07070B", surface: "#101019", field: "#07070B", line: "#26263A", text: "#F2F2FF", muted: "#A9A9C4", faint: "#6E6E8C", accentBg: "#C2F53C", accentText: "#0A0A0F", grid: "#1A1A2A" },
 
   /* black and green, pink sun */
-  eclipse:     { label: "Eclipse",     mode: "dark", bg: "#05080A", surface: "#0D1614", field: "#05080A", line: "#1E2E28", text: "#EAF6F0", muted: "#9FB8AE", faint: "#6B8279", accentBg: "#FF3D6B", accentText: "#FFFFFF", grid: "#142220" },
+  eclipse:     { label: "Eclipse",     mode: "dark", palette: "neon", bg: "#05080A", surface: "#0D1614", field: "#05080A", line: "#1E2E28", text: "#EAF6F0", muted: "#9FB8AE", faint: "#6B8279", accentBg: "#FF3D6B", accentText: "#FFFFFF", grid: "#142220" },
 
   /* violet and mint */
-  ultraviolet: { label: "Ultraviolet", mode: "dark", bg: "#150B2E", surface: "#1F1142", field: "#150B2E", line: "#33205E", text: "#F3EDFF", muted: "#B9A6E0", faint: "#8470B5", accentBg: "#14E3B2", accentText: "#0B1F1A", grid: "#281652" },
+  ultraviolet: { label: "Ultraviolet", mode: "dark", palette: "neon", bg: "#150B2E", surface: "#1F1142", field: "#150B2E", line: "#33205E", text: "#F3EDFF", muted: "#B9A6E0", faint: "#8470B5", accentBg: "#14E3B2", accentText: "#0B1F1A", grid: "#281652" },
 
   /* violet-blue and coral */
-  cobalt:      { label: "Cobalt",      mode: "dark", bg: "#090C2A", surface: "#121640", field: "#090C2A", line: "#22285E", text: "#EDF0FF", muted: "#A8B0E0", faint: "#757DB0", accentBg: "#FF4D5E", accentText: "#FFFFFF", grid: "#171C4A" },
+  cobalt:      { label: "Cobalt",      mode: "dark", palette: "neon", bg: "#090C2A", surface: "#121640", field: "#090C2A", line: "#22285E", text: "#EDF0FF", muted: "#A8B0E0", faint: "#757DB0", accentBg: "#FF4D5E", accentText: "#FFFFFF", grid: "#171C4A" },
 
   /* the pale ones keep the same accents, against paper */
-  emerald:     { label: "Emerald",     mode: "light", bg: "#F5F2EC", surface: "#FFFFFF", field: "#FFFFFF", line: "#E2DED4", text: "#101613", muted: "#4A5750", faint: "#8A9189", accentBg: "#00A862", accentText: "#FFFFFF", grid: "#E8E4DA" },
-  orchid:      { label: "Orchid",      mode: "light", bg: "#F6F3EF", surface: "#FFFFFF", field: "#FFFFFF", line: "#E4DEE8", text: "#160F1E", muted: "#514860", faint: "#8C8399", accentBg: "#6D28F5", accentText: "#FFFFFF", grid: "#EBE5F0" },
+  emerald:     { label: "Emerald",     mode: "light", palette: "soft", bg: "#F5F2EC", surface: "#FFFFFF", field: "#FFFFFF", line: "#E2DED4", text: "#101613", muted: "#4A5750", faint: "#8A9189", accentBg: "#00A862", accentText: "#FFFFFF", grid: "#E8E4DA" },
+  orchid:      { label: "Orchid",      mode: "light", palette: "neon", bg: "#F6F3EF", surface: "#FFFFFF", field: "#FFFFFF", line: "#E4DEE8", text: "#160F1E", muted: "#514860", faint: "#8C8399", accentBg: "#6D28F5", accentText: "#FFFFFF", grid: "#EBE5F0" },
 };
 
 const FONTS = {
+  /* Helvetica is installed on macOS and iOS; Windows falls through to
+     Arial and Android to Roboto, which are close enough that the layout
+     does not move. */
+  helvetica:{ label: "Helvetica", stack: "'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', sans-serif" },
   system:   { label: "Neutral",  stack: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" },
   serif:    { label: "Serif",    stack: "ui-serif, Georgia, Cambria, Times New Roman, serif" },
   mono:     { label: "Mono",     stack: "ui-monospace, SFMono-Regular, Menlo, monospace" },
@@ -74,11 +78,9 @@ const FONTS = {
      degrades to a system face instead of to Times New Roman. */
   grotesk:  { label: "Grotesk",  google: "Space+Grotesk:wght@400;500;700", stack: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif" },
   chakra:   { label: "Chakra",   google: "Chakra+Petch:wght@400;500;700",  stack: "'Chakra Petch', ui-sans-serif, system-ui, sans-serif" },
-  rajdhani: { label: "Rajdhani", google: "Rajdhani:wght@400;500;700",      stack: "'Rajdhani', ui-sans-serif, system-ui, sans-serif" },
-  jetbrains:{ label: "JetBrains",google: "JetBrains+Mono:wght@400;500;700",stack: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" },
-  /* wide and unmistakably sci-fi. Fine for headings, punishing across a
-     table of numbers — look at the Summary before keeping it */
-  orbitron: { label: "Orbitron", google: "Orbitron:wght@400;500;700",      stack: "'Orbitron', ui-sans-serif, system-ui, sans-serif" },
+  /* Nothing's own Ndot is licensed for Nothing's brand materials only —
+     it cannot be embedded here. This is the nearest open dot-matrix face. */
+  dot:      { label: "Dot",      google: "DotGothic16",                    stack: "'DotGothic16', ui-sans-serif, system-ui, sans-serif" },
 };
 
 const DENSITY = {
@@ -90,6 +92,7 @@ const theme = (settings) => THEMES[settings?.theme] || THEMES.dark;
 
 function ThemeStyle({ settings }) {
   const t = theme(settings);
+  activePalette = paletteName(settings);
   const f = FONTS[settings?.font] || FONTS.system;
   const css = `${f.google ? `@import url('https://fonts.googleapis.com/css2?family=${f.google}&display=swap');` : ""}
 .dl-root{--bg:${t.bg};--surface:${t.surface};--field:${t.field};--line:${t.line};--text:${t.text};--muted:${t.muted};--faint:${t.faint};--abg:${t.accentBg};--atext:${t.accentText};font-family:${f.stack};}
@@ -220,7 +223,7 @@ function allSliderKeys(types) {
 
 const DEFAULT_SETTINGS = {
   theme: "dark",
-  font: "system",
+  font: "helvetica",
   density: "comfortable",
   ranges: ["7", "30", "12w", "1y", "custom"],
   metrics: ["activity", "load", "duration", "distance", "elevPos", "rpe", "motivation", "freshness", "injury"],
@@ -421,7 +424,7 @@ const labelFor = (types, s) => {
 
 const colorFor = (types, s) => {
   const root = findRoot(types, s.typeId);
-  return root ? root.color : "#888";
+  return root ? shade(root.color) : "#888";
 };
 
 /* ================================================================== */
@@ -1070,7 +1073,7 @@ function collectSubs(type) {
   const walk = (nodes, prefix, names) => {
     nodes.forEach((n) => {
       const key = [...prefix, n.id].join("/");
-      out.push({ typeId: type.id, key, label: [...names, n.name].join(" › "), color: type.color });
+      out.push({ typeId: type.id, key, label: [...names, n.name].join(" › "), color: shade(type.color) });
       if (n.children?.length) walk(n.children, [...prefix, n.id], [...names, n.name]);
     });
   };
@@ -1126,7 +1129,7 @@ function FilterPanel({ types, sessions, filter, setFilter, allowSubs }) {
         {shown.length ? (
           <div className="flex flex-wrap gap-2">
             {shown.map((t) => (
-              <Chip key={t.id} small on={isOn(t.id)} color={t.color} onClick={() => toggleType(t.id)}>{t.name}</Chip>
+              <Chip key={t.id} small on={isOn(t.id)} color={shade(t.color)} onClick={() => toggleType(t.id)}>{t.name}</Chip>
             ))}
             <Chip small on={!!filter.merge} onClick={() => setFilter((f) => ({ ...f, merge: !f.merge }))}>Merged</Chip>
           </div>
@@ -1681,7 +1684,7 @@ function SessionSheet({ types, initial, date, onSave, onClose, settings, templat
     initial || { id: uid(), date: date || todayISO(), typeId: null, path: [], values: {}, custom: {}, sliders: {}, boxes: [], title: "", url: "", note: "" }
   );
   const root = findRoot(types, s.typeId);
-  const color = root ? root.color : "var(--text)";
+  const color = root ? shade(root.color) : "var(--text)";
   const set = (patch) => setS((x) => ({ ...x, ...patch }));
 
   const levels = [];
@@ -1717,7 +1720,7 @@ function SessionSheet({ types, initial, date, onSave, onClose, settings, templat
                 {templates.map((tpl) => {
                   const t = findRoot(types, tpl.typeId);
                   return (
-                    <Chip key={tpl.id} small color={t?.color}
+                    <Chip key={tpl.id} small color={shade(t?.color)}
                       onClick={() => setS((x) => ({
                         ...x, typeId: tpl.typeId, path: tpl.path || [],
                         values: { ...(tpl.values || {}) }, custom: { ...(tpl.custom || {}) },
@@ -1739,7 +1742,7 @@ function SessionSheet({ types, initial, date, onSave, onClose, settings, templat
             <div className="mt-4 mb-2 text-sm dl-muted">Activity</div>
             <div className="flex flex-wrap gap-2">
               {types.filter((t) => !t.muted || t.id === s.typeId).map((t) => (
-                <Chip key={t.id} on={s.typeId === t.id} color={t.color}
+                <Chip key={t.id} on={s.typeId === t.id} color={shade(t.color)}
                   onClick={() => set({ typeId: t.id, path: [], values: {}, custom: {}, sliders: {}, boxes: [] })}>
                   {t.name}
                 </Chip>
@@ -2032,7 +2035,7 @@ function Summary({ data }) {
               {stacked
                 ? (filter.merge
                     ? <Bar dataKey="total" fill={th.text} name="all activities" />
-                    : shownTypes.map((t) => <Bar key={t.id} dataKey={t.id} stackId="a" fill={t.color} name={t.name} />))
+                    : shownTypes.map((t) => <Bar key={t.id} dataKey={t.id} stackId="a" fill={shade(t.color)} name={t.name} />))
                 : <Bar dataKey="avg" fill={th.text} name={`${met.label} (average)`} />}
             </BarChart>
           </ResponsiveContainer>
@@ -2117,7 +2120,43 @@ const PALETTES = {
   },
 };
 
-const paletteOf = (settings) => (PALETTES[settings?.palette] || PALETTES.soft).colors;
+/* "auto" means the theme decides, which is what makes switching to
+   Midnight turn every pastel into its neon counterpart. */
+const paletteName = (settings) => {
+  const want = settings?.palette || "auto";
+  if (want !== "auto" && PALETTES[want]) return want;
+  return (THEMES[settings?.theme] || THEMES.dark).palette || "soft";
+};
+
+const paletteOf = (settings) => PALETTES[paletteName(settings)].colors;
+
+/* An activity stores the hex it was given. Rather than rewrite stored
+   colours when the theme changes — which would be destructive and
+   irreversible — we translate at render time: find the colour's slot in
+   whichever palette it came from, and return the same slot in the
+   active one. A colour that belongs to no palette (picked by hand, or
+   arriving from Coros) passes through untouched.
+
+   activePalette is module state set by ThemeStyle, which renders before
+   its siblings. The alternative was threading settings through a dozen
+   components that only need it to tint a dot. */
+let activePalette = "soft";
+
+const SLOT = (() => {
+  const m = new Map();
+  for (const [name, p] of Object.entries(PALETTES)) {
+    p.colors.forEach((hex, i) => m.set(hex.toUpperCase(), i));
+  }
+  return m;
+})();
+
+function shade(hex) {
+  if (!hex) return hex;
+  const i = SLOT.get(String(hex).toUpperCase());
+  if (i === undefined) return hex;
+  const cols = PALETTES[activePalette].colors;
+  return cols[i] || hex;
+}
 
 // for anywhere a default colour is needed with no settings to hand
 const PALETTE = PALETTES.soft.colors;
@@ -2254,7 +2293,7 @@ function Parameters({ data, update }) {
         {data.types.map((t, i) => (
           <div key={t.id} ref={(el) => { rowRefs.current[t.id] = el; }} className={card}
             style={{
-              borderLeftColor: t.color, borderLeftWidth: 4,
+              borderLeftColor: shade(t.color), borderLeftWidth: 4,
               opacity: t.muted && armed !== t.id ? 0.5 : 1,
               outline: armed === t.id ? "2px solid var(--text)" : "none",
               transform: armed === t.id ? "scale(1.02)" : "none",
@@ -2270,7 +2309,7 @@ function Parameters({ data, update }) {
             {armed === t.id ? (
               <div className="space-y-2 p-3">
                 <div className="flex items-center gap-2">
-                  <span className="h-3 w-3 rounded-full" style={{ background: t.color }} />
+                  <span className="h-3 w-3 rounded-full" style={{ background: shade(t.color) }} />
                   <span className="flex-1 font-medium">{t.name}</span>
                   <button onClick={() => { setArmed(null); dragging.current = false; }} className="dl-accent rounded-xl px-4 py-2 text-sm font-medium">
                     Done
@@ -2297,7 +2336,7 @@ function Parameters({ data, update }) {
                   setOpen(open === t.id ? null : t.id);
                 }}
                 className="flex w-full items-center gap-3 p-4 text-left">
-                <span className="h-3 w-3 rounded-full" style={{ background: t.color }} />
+                <span className="h-3 w-3 rounded-full" style={{ background: shade(t.color) }} />
                 <span className="flex-1 font-medium">{t.name}</span>
                 {t.muted && <span className="text-xs dl-faint">muted</span>}
                 {open === t.id ? <ChevronDown size={16} className="dl-faint" /> : <ChevronRight size={16} className="dl-faint" />}
@@ -2316,7 +2355,7 @@ function Parameters({ data, update }) {
                     {paletteOf(settings).map((c) => (
                       <button key={c} onClick={() => editNode(t.id, [], (x) => ({ ...x, color: c }))}
                         className="h-8 w-8 rounded-full border-2"
-                        style={{ background: c, borderColor: t.color === c ? "var(--text)" : "transparent" }} />
+                        style={{ background: c, borderColor: shade(t.color) === shade(c) ? "var(--text)" : "transparent" }} />
                     ))}
                   </div>
                 </div>
@@ -2626,15 +2665,18 @@ function Parameters({ data, update }) {
             ))}
           </div>
           <p className="text-xs dl-faint">
-            The last five are fetched from Google Fonts the first time you pick them. Orbitron is wide:
-            look at the Summary before keeping it.
+            Grotesk, Chakra and Dot are fetched from Google Fonts the first time you pick them.
+            The rest are already on the device.
           </p>
         </SubSection>
 
-        <SubSection title="Activity colours" hint={(PALETTES[settings.palette] || PALETTES.soft).label}>
+        <SubSection title="Activity colours" hint={PALETTES[paletteName(settings)].label}>
           <div className="mb-2 flex flex-wrap gap-2">
+            <Chip small on={(settings.palette || "auto") === "auto"} onClick={() => setSettings({ palette: "auto" })}>
+              Follow theme
+            </Chip>
             {Object.entries(PALETTES).map(([k, v]) => (
-              <Chip key={k} small on={(settings.palette || "soft") === k} onClick={() => setSettings({ palette: k })}>{v.label}</Chip>
+              <Chip key={k} small on={settings.palette === k} onClick={() => setSettings({ palette: k })}>{v.label}</Chip>
             ))}
           </div>
           <div className="mb-2 flex flex-wrap gap-1">
@@ -2643,7 +2685,9 @@ function Parameters({ data, update }) {
             ))}
           </div>
           <p className="text-xs dl-faint">
-            Only changes what the colour picker offers. Activities keep the colour you already gave them.
+            Activity colours are stored as slots, not fixed hexes: the same activity shows its pastel
+            in Dark and its neon counterpart in Midnight. Nothing is rewritten — switch back and the
+            old colours return. A colour picked outside these sets stays exactly as chosen.
           </p>
         </SubSection>
 
