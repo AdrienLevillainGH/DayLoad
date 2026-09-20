@@ -176,17 +176,39 @@ function Logo({ settings, size = 40 }) {
   return <img src={logoURI(settings)} width={size} height={size} alt="" className="rounded-xl" />;
 }
 
-/* keep the browser tab in step with the choice */
+/* Point the page at the chosen icon: the tab favicon and the iOS touch
+   icon immediately, and the manifest, which is what Android installs
+   from. There is one prebuilt manifest per combination in public/icons,
+   each naming its own PNGs — the installed icon cannot be generated in
+   the browser, because Google's servers fetch it themselves.
+
+   Android rebuilds an installed app from the manifest roughly daily, so
+   a change here reaches the home screen within a day or two rather than
+   at once. Reinstalling applies it immediately. iOS never revisits it. */
 function Favicon({ settings }) {
   useEffect(() => {
-    let link = document.querySelector("link[rel='icon']");
-    if (!link) {
-      link = document.createElement("link");
-      link.rel = "icon";
-      document.head.appendChild(link);
-    }
-    link.type = "image/svg+xml";
-    link.href = logoURI(settings);
+    const key = `${logoType(settings)}-${skinName(settings)}`;
+    const dir = `${import.meta.env.BASE_URL}icons/${key}`;
+
+    const set = (selector, make, attrs) => {
+      let el = document.querySelector(selector);
+      if (!el) { el = make(); document.head.appendChild(el); }
+      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+      return el;
+    };
+
+    set("link[rel='icon']", () => Object.assign(document.createElement("link"), { rel: "icon" }),
+        { type: "image/svg+xml", href: logoURI(settings) });
+
+    set("link[rel='apple-touch-icon']", () => Object.assign(document.createElement("link"), { rel: "apple-touch-icon" }),
+        { href: `${dir}/icon-192.png` });
+
+    set("link[rel='manifest']", () => Object.assign(document.createElement("link"), { rel: "manifest" }),
+        { href: `${dir}/manifest.webmanifest` });
+
+    // the status bar in standalone follows this
+    set("meta[name='theme-color']", () => Object.assign(document.createElement("meta"), { name: "theme-color" }),
+        { content: SKINS[skinName(settings)].sky });
   }, [settings?.logo, settings?.logoSkin, settings?.theme]);
   return null;
 }
@@ -2754,8 +2776,8 @@ function Parameters({ data, update }) {
         <div className="flex items-center gap-3">
           <Logo settings={settings} size={64} />
           <p className="flex-1 text-xs dl-faint">
-            Shown in the browser tab. The installed home-screen icon is set at install time and does
-            not follow this — reinstall to change it.
+            Applies to the browser tab straight away. On an installed app Android picks the change up
+            within a day or two; reinstalling applies it at once.
           </p>
         </div>
 
