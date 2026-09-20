@@ -206,9 +206,12 @@ function Favicon({ settings }) {
     set("link[rel='manifest']", () => Object.assign(document.createElement("link"), { rel: "manifest" }),
         { href: `${dir}/manifest.webmanifest` });
 
-    // the status bar in standalone follows this
+    // The system bars follow this. It tracks the app theme, not the icon:
+    // the icon is a mark, the theme is the surface the app is drawn on,
+    // and having the navigation bar pick up the icon's colour made the
+    // app look like it was wearing someone else's trousers.
     set("meta[name='theme-color']", () => Object.assign(document.createElement("meta"), { name: "theme-color" }),
-        { content: SKINS[skinName(settings)].sky });
+        { content: theme(settings).bg });
   }, [settings?.logo, settings?.logoSkin, settings?.theme]);
   return null;
 }
@@ -800,6 +803,17 @@ function orderedFields(keys, settings, hide = true) {
   return order.filter((k) => keys.includes(k) && !off.includes(k));
 }
 
+/* A slider is a 0-10 rating, so averaging it is the safe default: summed
+   Quality would only reward doing more sessions. But some sliders are a
+   burden rather than a level — niggle above all — and for those the
+   total over a week is the number that means something, and the one you
+   can compare with last week. So it is a per-slider choice. */
+const aggOf = (id, settings) => ((settings?.sliderAgg || {})[id] === "sum" ? "sum" : "level");
+
+function withAgg(m, settings) {
+  return m.kind === "level" && aggOf(m.id, settings) === "sum" ? { ...m, kind: "sum" } : m;
+}
+
 function metricsFor(types, settings) {
   const off = settings?.fieldsOff || [];
   const order = settings?.fieldOrder || Object.keys(FIELDS);
@@ -826,10 +840,10 @@ function metricsFor(types, settings) {
       return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
     });
   return [
-    ...head, ...fieldMetrics, ...rest,
+    ...head, ...fieldMetrics, ...rest.map((m) => withAgg(m, settings)),
     ...formulaNames.map((n) => ({ id: `fx:${n}`, label: n, kind: "sum", unit: "" })),
     ...sliderNames
-      .map((n) => ({ id: `cs:${n}`, label: n, kind: "level", unit: "" }))
+      .map((n) => withAgg({ id: `cs:${n}`, label: n, kind: "level", unit: "" }, settings))
       .sort((a, b) => {
         const ia = sliderOrder.indexOf(a.id), ib = sliderOrder.indexOf(b.id);
         return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
@@ -2040,12 +2054,23 @@ function Summary({ data }) {
         byKey[k][lane] = (byKey[k][lane] || 0) + v;
       }
       else {
-        acc[k] = acc[k] || { n: 0, t: 0 };
         const w = met.kind === "avg" ? weightFor(s, met) : 1;
+        // overall, and again per activity — an average cannot be stacked
+        // (the total would mean nothing) but it can be shown side by side
+        acc[k] = acc[k] || { n: 0, t: 0, by: {} };
         acc[k].n += w; acc[k].t += v * w;
+        const lane = s.typeId;
+        acc[k].by[lane] = acc[k].by[lane] || { n: 0, t: 0 };
+        acc[k].by[lane].n += w; acc[k].by[lane].t += v * w;
       }
     }
-    if (!stacked) out.forEach((x) => { x.avg = acc[x.key] && acc[x.key].n ? round(acc[x.key].t / acc[x.key].n, 2) : null; });
+    if (!stacked) out.forEach((x) => {
+      const a = acc[x.key];
+      x.avg = a && a.n ? round(a.t / a.n, 2) : null;
+      if (a) for (const [lane, p] of Object.entries(a.by)) {
+        if (p.n) x[`avg:${lane}`] = round(p.t / p.n, 2);
+      }
+    });
     return out;
   }, [inRange, data.types, fromISO, toISO, bucket, met, stacked, filter.merge]);
 
@@ -2160,11 +2185,23 @@ function Summary({ data }) {
                 ? (filter.merge
                     ? <Bar dataKey="total" fill={th.text} name="all activities" />
                     : shownTypes.map((t) => <Bar key={t.id} dataKey={t.id} stackId="a" fill={shade(t.color)} name={t.name} />))
-                : <Bar dataKey="avg" fill={th.text} name={`${met.label} (average)`} />}
+                : (filter.merge
+                    ? <Bar dataKey="avg" fill={th.text} name={`${met.label} (average)`} />
+                    // side by side, not stacked: each bar is that activity's
+                    // own average, and the heights are directly comparable
+                    : shownTypes.map((t) => (
+                        <Bar key={t.id} dataKey={`avg:${t.id}`} fill={shade(t.color)} name={t.name} />
+                      )))}
             </BarChart>
           </ResponsiveContainer>
         </div>
-        {!stacked && <p className="mt-2 text-xs dl-faint">Average across the sessions in each bar.</p>}
+        {!stacked && (
+          <p className="mt-2 text-xs dl-faint">
+            {filter.merge
+              ? "Average across the sessions in each bar."
+              : "Average per activity. Bars sit side by side rather than stacked, because averages do not add up — use Merged for one figure per period."}
+          </p>
+        )}
       </div>
 
       {data.settings?.showStats !== false && (
@@ -2767,6 +2804,45 @@ function Parameters({ data, update }) {
             <Chip small on={settings.sliderHints === true} onClick={() => setSettings({ sliderHints: settings.sliderHints !== true })}>
               Show the description
             </Chip>
+          </div>
+
+          <div className="mt-4 border-t dl-line pt-3">
+            <div className="mb-2 text-sm dl-muted">How each one adds up</div>
+            <div className="space-y-2">
+              {[
+                // the built-in sliders…
+                ...ALL_SLIDERS
+                  .filter((k) => !(settings.slidersOff || []).includes(k))
+                  .map((k) => ({ key: k, label: (METRICS.find((x) => x.id === k) || {}).label }))
+                  .filter((x) => x.label),
+                // …and the ones defined on activities, which is where
+                // Quality lives
+                ...[...new Set((data.types || []).flatMap((t) => (t.customSliders || []).map((c) => c.name)))]
+                  .filter((n) => n && !(settings.slidersOff || []).includes(`cs:${n}`))
+                  .map((n) => ({ key: `cs:${n}`, label: n })),
+              ].map(({ key: k, label }) => {
+                const sum = (settings.sliderAgg || {})[k] === "sum";
+                return (
+                  <div key={k} className="flex items-center gap-2">
+                    <span className="flex-1 text-sm dl-muted">{label}</span>
+                    <Chip small on={!sum}
+                      onClick={() => setSettings({ sliderAgg: { ...(settings.sliderAgg || {}), [k]: "level" } })}>
+                      Average
+                    </Chip>
+                    <Chip small on={sum}
+                      onClick={() => setSettings({ sliderAgg: { ...(settings.sliderAgg || {}), [k]: "sum" } })}>
+                      Total
+                    </Chip>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-xs dl-faint">
+              Total suits anything you want to compare week to week: four sessions at 2 is a worse week
+              than one at 3, and an average hides that. The trade-off is that a total rises with the
+              number of sessions, so weeks with very different session counts are not directly
+              comparable. Average suits a level you want independent of volume.
+            </p>
           </div>
         </SubSection>
       </Section>

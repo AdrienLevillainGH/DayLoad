@@ -6,8 +6,8 @@
  "scope": "/DayLoad/",
  "display": "standalone",
  "orientation": "portrait",
- "background_color": "#3B35F5",
- "theme_color": "#3B35F5",
+ "background_color": "#000000",
+ "theme_color": "#000000",
  "icons": [
   {
    "src": "icon-192.png",
