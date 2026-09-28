@@ -1168,7 +1168,24 @@ export default function DayLoad() {
   const upsert = (list, x) => (list.some((y) => y.id === x.id) ? list.map((y) => (y.id === x.id ? x : y)) : [...list, x]);
 
   const saveNotebook = (raw) =>
-    setData((d) => ({ ...d, notebooks: upsert(d.notebooks || [], { ...raw, updatedAt: nowISO() }) }));
+    setData((d) => {
+      const list = d.notebooks || [];
+      let nb = { ...raw, updatedAt: nowISO() };
+      // once you have put them in an order, a new one arrives at the top of it
+      if (!list.some((x) => x.id === nb.id) && nb.order === undefined) {
+        const orders = list.map((x) => x.order).filter((o) => typeof o === "number");
+        if (orders.length) nb = { ...nb, order: Math.min(...orders) - 1 };
+      }
+      return { ...d, notebooks: upsert(list, nb) };
+    });
+
+  // ids in the order you left them; each notebook remembers its place
+  const reorderNotebooks = (ids) =>
+    setData((d) => {
+      const t = nowISO();
+      const at = new Map(ids.map((id, i) => [id, i]));
+      return { ...d, notebooks: (d.notebooks || []).map((n) => (at.has(n.id) && n.order !== at.get(n.id) ? { ...n, order: at.get(n.id), updatedAt: t } : n)) };
+    });
 
   // a notebook takes its entries with it, and every one of them needs its own tombstone
   const deleteNotebook = (id) => setData((d) => {
@@ -1232,7 +1249,7 @@ export default function DayLoad() {
         {page === "calendar" && (
           <Calendar data={data} onAdd={(date) => setSheet({ date })}
             onOpen={(s) => setSheet({ session: s })} onDelete={deleteSession} onFav={toggleFav}
-            onDuplicate={(s) => setSheet({ session: { ...s, id: uid(), date: todayISO(), fav: false, _dup: true } })}
+            onDuplicate={(s) => setSheet({ session: { ...s, id: uid(), date: todayISO(), fav: false, attachments: [], _dup: true } })}
             onTemplate={addTemplate}
             focus={calFocus} onFocused={() => setCalFocus(null)}
             onWrite={(s) => writeEntry(likelyNotebook(s.date), { date: s.date, sessionIds: [s.id] })}
@@ -1241,7 +1258,7 @@ export default function DayLoad() {
         {page === "summary" && <Summary data={data} />}
         {page === "notebooks" && (
           <Notebooks data={data} openId={nbOpen} setOpenId={openNotebook} focus={nbFocus}
-            onSaveNotebook={saveNotebook} onDeleteNotebook={deleteNotebook}
+            onSaveNotebook={saveNotebook} onDeleteNotebook={deleteNotebook} onReorder={reorderNotebooks}
             onWrite={writeEntry} onSaveEntry={saveEntry}
             onEditEntry={(e) => setEntrySheet({ isNew: false, entry: e })}
             onJump={(s) => { setCalFocus({ id: s.id, date: s.date }); setPage("calendar"); }} />
@@ -1695,6 +1712,7 @@ function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplat
               )}
 
               {s.note && <Note text={s.note} />}
+              <AttachmentStrip items={s.attachments} />
               <SessionNotes data={data} s={s} onWrite={onWrite} onOpenEntry={onOpenEntry} />
               {s.url && (
                 <a href={s.url} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm underline">
@@ -2108,12 +2126,48 @@ function SessionSheet({ types, initial, date, onSave, onClose, settings, templat
                 <Field label="Notes">
                   <textarea rows={3} className={inputCls} value={s.note || ""} onChange={(e) => set({ note: e.target.value })} />
                 </Field>
+                <SessionMedia items={s.attachments} onChange={(atts) => set({ attachments: atts })} />
               </div>
             </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+/* Photos and sketches on a session work exactly as in a notebook: the
+   small copy is shown, the original is kept on GitHub, a sketch is a
+   handful of strokes. A COROS update never touches them. */
+function SessionMedia({ items, onChange }) {
+  const tools = useAttachmentTools(items, onChange);
+  return (
+    <div>
+      <div className="mb-1 text-sm dl-muted">Photos and sketches</div>
+      <div className="flex gap-2">
+        <PhotoButton onFiles={tools.addPhotos} />
+        <button type="button" onClick={tools.newSketch}
+          className="flex flex-1 items-center justify-center gap-2 rounded-xl border dl-line py-2.5 text-sm dl-muted">
+          <PenTool size={16} /> Draw
+        </button>
+      </div>
+      <Attachments items={items} onOpen={tools.open} onRemove={tools.remove} />
+      {tools.ui}
+    </div>
+  );
+}
+
+function PhotoButton({ onFiles }) {
+  const ref = useRef(null);
+  return (
+    <>
+      <button type="button" onClick={() => ref.current && ref.current.click()}
+        className="flex flex-1 items-center justify-center gap-2 rounded-xl border dl-line py-2.5 text-sm dl-muted">
+        <ImagePlus size={16} /> Photo
+      </button>
+      <input ref={ref} type="file" accept="image/*" multiple hidden
+        onChange={(e) => { const fs = [...(e.target.files || [])]; e.target.value = ""; if (fs.length) onFiles(fs); }} />
+    </>
   );
 }
 
@@ -3946,10 +4000,21 @@ function OpenAllBar({ count, noun, allOpen, onAll, onNone }) {
 
 /* ---------- the tab ---------- */
 
-function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNotebook, onWrite, onEditEntry, onSaveEntry, onJump }) {
+function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNotebook, onReorder, onWrite, onEditEntry, onSaveEntry, onJump }) {
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [flash, setFlash] = useState(null);
+
+  // archiving happens at once and says so; it isn't a setting waiting for Save
+  const archive = (nb, on) => {
+    onSaveNotebook({ ...nb, archived: on, pinned: on ? false : nb.pinned });
+    setSheet(null);
+    setOpenId(null);
+    if (on) setShowArchived(false);
+    setFlash(on ? `“${nb.name}” archived. It's kept at the bottom of the list.` : `“${nb.name}” is back.`);
+    setTimeout(() => setFlash(null), 3500);
+  };
   const notebooks = data.notebooks || [];
   const entries = data.entries || [];
 
@@ -3957,10 +4022,16 @@ function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNot
   if (open) {
     return (
       <>
+        {open.archived && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
+            <span className="flex items-center gap-2"><Archive size={16} /> Archived</span>
+            <button onClick={() => archive(open, false)} className="rounded-lg border dl-line px-3 py-1.5 text-xs">Bring back</button>
+          </div>
+        )}
         <NotebookView key={open.id} data={data} nb={open} focus={focus} onBack={() => setOpenId(null)}
           onEdit={() => setSheet({ nb: open })} onSave={onSaveNotebook}
           onWrite={onWrite} onEditEntry={onEditEntry} onSaveEntry={onSaveEntry} onJump={onJump} />
-        {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)}
+        {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)} onArchive={archive}
           onSave={(n) => { onSaveNotebook(n); setSheet(null); }}
           onDelete={(id) => { onDeleteNotebook(id); setSheet(null); setOpenId(null); }} />}
       </>
@@ -3993,6 +4064,9 @@ function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNot
 
   const sorted = [...notebooks].sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    const oa = typeof a.order === "number", ob = typeof b.order === "number";
+    if (oa && ob && a.order !== b.order) return a.order - b.order;
+    if (oa !== ob) return oa ? 1 : -1; // one not yet placed goes above the placed ones
     return touchedAt(b, entries) > touchedAt(a, entries) ? 1 : -1;
   });
   const active = sorted.filter((n) => !n.archived);
@@ -4059,7 +4133,9 @@ function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNot
             </div>
           )}
 
-          {active.map((nb) => <NotebookCard key={nb.id} nb={nb} data={data} onOpen={() => setOpenId(nb.id)} />)}
+          {active.length > 1 && <p className="px-1 text-xs dl-faint">Press and hold a notebook to move it. Pinned ones stay on top.</p>}
+          <ReorderList items={active} onOpen={(nb) => setOpenId(nb.id)} data={data}
+            onMove={(ids) => onReorder([...ids, ...archived.map((n) => n.id)])} />
 
           {archived.length > 0 && (
             <div>
@@ -4074,9 +4150,103 @@ function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNot
         </>
       )}
 
-      {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)}
+      {flash && (
+        <div className="fixed inset-x-0 bottom-20 z-40 flex justify-center px-4">
+          <div className="dl-accent rounded-xl px-4 py-2 text-sm shadow-lg">{flash}</div>
+        </div>
+      )}
+
+      {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)} onArchive={archive}
         onSave={(n) => { onSaveNotebook(n); setSheet(null); setOpenId(n.id); }}
         onDelete={(id) => { onDeleteNotebook(id); setSheet(null); }} />}
+    </div>
+  );
+}
+
+/* Press and hold a card to pick it up, drag it, tap Done — the same
+   gesture as the activity list. A pinned notebook can only move among
+   pinned ones, and an unpinned one among unpinned: pins stay on top. */
+function ReorderList({ items, data, onOpen, onMove }) {
+  const [armed, setArmed] = useState(null);
+  const [order, setOrder] = useState(null); // ids while dragging
+  const timer = useRef(null);
+  const dragging = useRef(false);
+  const suppress = useRef(false);
+  const rows = useRef({});
+
+  const ids = order || items.map((n) => n.id);
+  const byId = new Map(items.map((n) => [n.id, n]));
+  const shown = ids.map((id) => byId.get(id)).filter(Boolean);
+
+  const press = (id) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      setArmed(id);
+      setOrder(items.map((n) => n.id));
+      suppress.current = true;
+      if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* ignore */ } }
+    }, 450);
+  };
+  const cancel = () => clearTimeout(timer.current);
+
+  const drag = (e) => {
+    if (!armed || !dragging.current) return;
+    const from = ids.indexOf(armed);
+    const pinned = !!byId.get(armed)?.pinned;
+    let to = from;
+    ids.forEach((id, i) => {
+      const el = rows.current[id];
+      if (!el || !!byId.get(id)?.pinned !== pinned) return; // never cross the pinned line
+      const r = el.getBoundingClientRect();
+      if (e.clientY > r.top && e.clientY < r.bottom) to = i;
+    });
+    if (to !== from) {
+      const next = [...ids];
+      const [m] = next.splice(from, 1);
+      next.splice(to, 0, m);
+      setOrder(next);
+    }
+  };
+
+  const done = () => {
+    if (order) onMove(order);
+    setArmed(null); setOrder(null); dragging.current = false;
+    setTimeout(() => { suppress.current = false; }, 50);
+  };
+
+  return (
+    <div className="space-y-3">
+      {shown.map((nb) => (
+        <div key={nb.id} ref={(el) => { rows.current[nb.id] = el; }}
+          style={{
+            outline: armed === nb.id ? "2px solid var(--text)" : "none", outlineOffset: 2, borderRadius: 16,
+            transform: armed === nb.id ? "scale(1.02)" : "none", transition: "transform 120ms ease",
+            touchAction: armed === nb.id ? "none" : "auto",
+            opacity: armed && armed !== nb.id ? 0.6 : 1,
+          }}
+          onPointerDown={(e) => {
+            if (e.target.closest && e.target.closest("[data-nodrag]")) return; // the Done button is for tapping
+            if (armed === nb.id) {
+              dragging.current = true;
+              // keep receiving the drag once the finger (or mouse) leaves this card
+              try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+            } else if (!armed) press(nb.id);
+          }}
+          onPointerMove={(e) => { if (armed === nb.id && dragging.current) drag(e); else cancel(); }}
+          onPointerUp={() => { cancel(); dragging.current = false; }}
+          onPointerCancel={() => { cancel(); dragging.current = false; }}
+          onPointerLeave={cancel}
+          onContextMenu={(e) => e.preventDefault()}>
+          <NotebookCard nb={nb} data={data}
+            onOpen={() => { if (suppress.current || armed) return; onOpen(nb); }} />
+          {armed === nb.id && (
+            <div data-nodrag className="mt-2 flex items-center justify-between px-1">
+              <span className="text-xs dl-faint">Drag to move{nb.pinned ? " among pinned notebooks" : ""}</span>
+              <button onClick={done} className="dl-accent rounded-xl px-4 py-1.5 text-sm font-medium">Done</button>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -4422,7 +4592,7 @@ function TrackAgainst({ data, track, onChange }) {
 
 /* ---------- making and changing a notebook ---------- */
 
-function NotebookSheet({ data, initial, onSave, onClose, onDelete }) {
+function NotebookSheet({ data, initial, onSave, onClose, onDelete, onArchive }) {
   const isNew = !initial || initial._new;
   const colors = paletteOf(data.settings); // the default comes from the theme's own set
   const [n, setN] = useState(() => {
@@ -4513,7 +4683,7 @@ function NotebookSheet({ data, initial, onSave, onClose, onDelete }) {
 
           {!isNew && (
             <div className={`${card} space-y-2 p-4`}>
-              <button onClick={() => set({ archived: !n.archived })} className="flex w-full items-center gap-2 text-sm dl-muted">
+              <button onClick={() => onArchive({ ...n, name: n.name.trim() || initial.name }, !n.archived)} className="flex w-full items-center gap-2 text-sm dl-muted">
                 <Archive size={16} /> {n.archived ? "Bring back from the archive" : "Archive — keep it, but out of the way"}
               </button>
               <button onClick={() => setConfirm(true)} className="flex w-full items-center gap-2 pt-2 text-sm" style={{ color: "#F2546B" }}>

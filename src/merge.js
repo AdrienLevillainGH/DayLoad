@@ -62,6 +62,7 @@ function hasUserContent(s) {
   if (s.sliders && Object.keys(s.sliders).length) return true;
   if (s.custom && Object.keys(s.custom).length) return true;
   if (Array.isArray(s.boxes) && s.boxes.length) return true;
+  if (Array.isArray(s.attachments) && s.attachments.length) return true;
   if (s.fav) return true;
   return false;
 }
