@@ -15,7 +15,7 @@
    keystroke.
    ================================================================== */
 
-import { merge, normalise, differs, nowISO } from "./merge.js";
+import { merge, normalise, differs, nowISO, SCHEMA } from "./merge.js";
 import * as gh from "./github.js";
 
 const KEY = "dayload:v1";
@@ -70,6 +70,13 @@ let timer = null;
 let pushing = false;
 let again = false; // a change arrived mid-push
 
+/* Set when the repo was written by a newer DayLoad than this one. This
+   device then shows what it has but never writes: merging with code that
+   doesn't know the newer fields would quietly delete them everywhere. */
+let blocked = false;
+const TOO_OLD = "Another device saved with a newer DayLoad. Reload this page to update — nothing will be saved from here until you do.";
+const newer = (d) => d && (d.version || 0) > SCHEMA;
+
 async function pull() {
   const file = await gh.readFile(FILE);
   if (!file) { knownSha = null; return null; }
@@ -98,6 +105,12 @@ async function pushNow() {
       if (!local) break;
 
       const remote = await pull(); // also refreshes knownSha
+      if (newer(remote)) {
+        blocked = true;
+        setStatus({ state: "error", error: TOO_OLD, pending: false });
+        pushing = false;
+        return;
+      }
       const merged = remote ? merge(local, remote) : normalise(local);
 
       writeLocal(merged);
@@ -149,7 +162,7 @@ if (typeof window !== "undefined") {
 }
 
 function schedule() {
-  if (!gh.isLinked()) return;
+  if (!gh.isLinked() || blocked) return;
   setStatus({ pending: true });
   clearTimeout(timer);
   timer = setTimeout(pushNow, QUIET_MS);
@@ -177,6 +190,14 @@ export const store = {
         setStatus({ state: "synced", at: nowISO(), error: null });
         if (local) schedule();
         return local ? normalise(local) : null;
+      }
+
+      if (newer(remote)) {
+        // show the newer data as it is, and leave it alone
+        blocked = true;
+        writeLocal(remote);
+        setStatus({ state: "error", error: TOO_OLD });
+        return remote;
       }
 
       const merged = local ? merge(local, remote) : remote;

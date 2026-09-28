@@ -19,9 +19,18 @@
    - Sessions are deduplicated on corosLabelId, but only ever by
      dropping a copy with nothing of yours in it. A duplicate holding
      an RPE or a note is left alone for you to sort out.
+   - Notebooks and their entries follow exactly the session rules:
+     updatedAt per item, later wins, deletes are tombstones in the same
+     graveyard. Ids are random, so one graveyard serves all three.
    ================================================================== */
 
 export const nowISO = () => new Date().toISOString();
+
+/* The shape of the data this build understands. Raise it whenever a
+   build adds something an older build would drop on merge — the way
+   notebooks would have been dropped by a device that had never heard of
+   them. A device finding a higher number in the repo stops writing. */
+export const SCHEMA = 5;
 
 const at = (s) => (s && s.updatedAt) || "";
 
@@ -34,6 +43,8 @@ export function normalise(data, stamp) {
   return {
     ...data,
     sessions: (data.sessions || []).map((s) => (s.updatedAt ? s : { ...s, updatedAt: when })),
+    notebooks: (data.notebooks || []).map((n) => (n.updatedAt ? n : { ...n, updatedAt: when })),
+    entries: (data.entries || []).map((e) => (e.updatedAt ? e : { ...e, updatedAt: when })),
     graveyard: Array.isArray(data.graveyard) ? data.graveyard : [],
     stamps: {
       settings: when,
@@ -93,23 +104,30 @@ export function merge(a, b) {
     if (!prev || (g.at || "") > (prev.at || "")) graves.set(g.id, g);
   }
 
-  /* ---- sessions ---- */
-  const byId = new Map();
-  for (const s of [...A.sessions, ...B.sessions]) {
-    const prev = byId.get(s.id);
-    if (!prev || at(s) > at(prev)) byId.set(s.id, s);
-  }
+  /* ---- anything kept as a list of stamped items ---- */
+  // the later edit wins, and a delete beats an edit only if it happened after it
+  const collect = (key) => {
+    const byId = new Map();
+    for (const x of [...(A[key] || []), ...(B[key] || [])]) {
+      const prev = byId.get(x.id);
+      if (!prev || at(x) > at(prev)) byId.set(x.id, x);
+    }
+    const out = [];
+    for (const x of byId.values()) {
+      const g = graves.get(x.id);
+      if (g && (g.at || "") >= at(x)) continue;
+      out.push(x);
+    }
+    return out;
+  };
 
-  // a delete beats an edit only if it happened after it
-  let sessions = [];
-  for (const s of byId.values()) {
-    const g = graves.get(s.id);
-    if (g && (g.at || "") >= at(s)) continue;
-    sessions.push(s);
-  }
-
+  let sessions = collect("sessions");
   sessions = dedupeByLabel(sessions);
   sessions.sort((x, y) => (x.date < y.date ? 1 : -1));
+
+  const notebooks = collect("notebooks");
+  const entries = collect("entries");
+  entries.sort((x, y) => (x.date < y.date ? 1 : -1));
 
   /* ---- the stamped wholes ---- */
   const pick = (key) => {
@@ -134,6 +152,8 @@ export function merge(a, b) {
     types: pick("types"),
     templates: pick("templates"),
     sessions,
+    notebooks,
+    entries,
     graveyard: [...graves.values()].filter((g) => (g.at || "") > cutoff),
     stamps: {
       settings: stampOf("settings"),
@@ -153,6 +173,8 @@ export function differs(a, b) {
 function strip(d) {
   return {
     sessions: (d.sessions || []).map((s) => [s.id, s.updatedAt]).sort(),
+    notebooks: (d.notebooks || []).map((n) => [n.id, n.updatedAt]).sort(),
+    entries: (d.entries || []).map((e) => [e.id, e.updatedAt]).sort(),
     graveyard: (d.graveyard || []).map((g) => [g.id, g.at]).sort(),
     stamps: d.stamps || {},
   };

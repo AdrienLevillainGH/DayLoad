@@ -152,3 +152,51 @@ export async function check() {
   if (!j.permissions || !j.permissions.push) throw new Error("The token can read this repo but not write to it. Contents needs Read and write.");
   return { private: j.private, name: j.full_name };
 }
+
+/* ---------- binary files: photos ---------- */
+
+// each segment encoded on its own, so photos/x.jpg keeps its slash
+const encPath = (p) => String(p).split("/").map(encodeURIComponent).join("/");
+
+export async function readBytes(path) {
+  const j = await api(`${base()}/contents/${encPath(path)}`);
+  if (!j || !j.content) return null;
+  const bin = atob(String(j.content).replace(/\s/g, ""));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+/* Photos are named by a random id and never rewritten, so there is no
+   sha to carry. GitHub answers 422 when the file already exists —
+   which only happens when an earlier upload landed but its reply was
+   lost — and that counts as done. */
+export async function writeBytes(path, bytes, message) {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  try {
+    await api(`${base()}/contents/${encPath(path)}`, {
+      method: "PUT",
+      body: JSON.stringify({ message: message || `dayload: add ${path}`, content: btoa(bin) }),
+    });
+  } catch (e) {
+    if (/\b422\b/.test(e.message)) return;
+    throw e;
+  }
+}
+
+/* The contents endpoint only inlines files under 1 MB. An original
+   photo is bigger, so it is asked for raw, which works up to 100 MB. */
+export async function readRaw(path) {
+  const c = config();
+  if (!c.token) throw new Error("No GitHub token on this device.");
+  const r = await fetch(`https://api.github.com${base()}/contents/${encPath(path)}`, {
+    headers: {
+      accept: "application/vnd.github.raw+json",
+      authorization: `Bearer ${c.token}`,
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub returned ${r.status}.`);
+  return new Uint8Array(await r.arrayBuffer());
+}

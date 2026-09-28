@@ -1,16 +1,20 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ComposedChart, Line } from "recharts";
 import * as math from "mathjs";
 import {
   Plus, Trash2, Pencil, Download, Upload, Copy, Check, X, Search,
   ChevronRight, ChevronDown, ChevronLeft, ChevronUp, Link as LinkIcon,
-  CalendarDays, BarChart3, Settings2, Save, Star, CopyPlus, Bookmark,
+  CalendarDays, BarChart3, Settings2, Save, Star, CopyPlus, Bookmark, Share2,
+  NotebookPen, NotebookText, Mountain, Pin, Archive, BookOpen,
+  SquareCheck, List, Heading, Bold, ImagePlus, PenTool, Eraser, Undo2,
+  Paperclip, ChevronsUpDown, ChevronsDownUp,
 } from "lucide-react";
 
 import { store, subscribe as onSync, syncStatus } from "./storage.js";
-import { nowISO } from "./merge.js";
+import { nowISO, SCHEMA } from "./merge.js";
 import * as gh from "./github.js";
 import { isConnected, connect, disconnect, sync as corosSync } from "./coros.js";
+import { addPhoto, photoURL, originalURL, originalPending, onPending, flushPending } from "./photos.js";
 
 /* ================================================================== */
 /* helpers                                                            */
@@ -512,7 +516,8 @@ function migrate(d) {
     };
     types.forEach((t) => { if (canon[t.id]) t.fields = canon[t.id]; });
   }
-  return { ...d, version: 4, settings, types, sessions, templates: d.templates || [] };
+  return { ...d, version: Math.max(d.version || 0, SCHEMA), settings, types, sessions, templates: d.templates || [],
+           notebooks: d.notebooks || [], entries: d.entries || [] };
 }
 
 /* ================================================================== */
@@ -1085,6 +1090,10 @@ export default function DayLoad() {
   const [ready, setReady] = useState(false);
   const [page, setPage] = useState("calendar");
   const [sheet, setSheet] = useState(null);
+  const [nbOpen, setNbOpen] = useState(null);     // notebook shown in the Notebooks tab
+  const [nbFocus, setNbFocus] = useState(null);   // entry to scroll to and outline
+  const [entrySheet, setEntrySheet] = useState(null);
+  const [calFocus, setCalFocus] = useState(null); // session to show when jumping back to the calendar
 
   useEffect(() => {
     let live = true;
@@ -1155,9 +1164,62 @@ export default function DayLoad() {
   const toggleFav = (id) =>
     setData((d) => ({ ...d, sessions: d.sessions.map((x) => (x.id === id ? { ...x, fav: !x.fav, updatedAt: nowISO() } : x)) }));
 
+  /* ---- notebooks: same rules as sessions, stamped and tombstoned ---- */
+  const upsert = (list, x) => (list.some((y) => y.id === x.id) ? list.map((y) => (y.id === x.id ? x : y)) : [...list, x]);
+
+  const saveNotebook = (raw) =>
+    setData((d) => ({ ...d, notebooks: upsert(d.notebooks || [], { ...raw, updatedAt: nowISO() }) }));
+
+  // a notebook takes its entries with it, and every one of them needs its own tombstone
+  const deleteNotebook = (id) => setData((d) => {
+    const t = nowISO();
+    const gone = (d.entries || []).filter((e) => e.notebookId === id).map((e) => e.id);
+    const dead = new Set([id, ...gone]);
+    return {
+      ...d,
+      notebooks: (d.notebooks || []).filter((n) => n.id !== id),
+      entries: (d.entries || []).filter((e) => e.notebookId !== id),
+      graveyard: [...(d.graveyard || []).filter((g) => !dead.has(g.id)), ...[...dead].map((x) => ({ id: x, at: t }))],
+    };
+  });
+
+  const saveEntry = (raw) => {
+    const e = { ...raw, updatedAt: nowISO() };
+    setData((d) => ({ ...d, entries: upsert(d.entries || [], e) }));
+    return e;
+  };
+
+  const deleteEntry = (id) =>
+    setData((d) => ({
+      ...d,
+      entries: (d.entries || []).filter((e) => e.id !== id),
+      graveyard: [...(d.graveyard || []).filter((g) => g.id !== id), { id, at: nowISO() }],
+    }));
+
+  const openNotebook = (id, entryId = null) => { setNbOpen(id); setNbFocus(entryId); };
+
+  // the notebook written in most recently is the likeliest one to write in next
+  const likelyNotebook = (date) => {
+    const open = (data.notebooks || []).filter((n) => n.kind !== "page" && !n.archived);
+    const trip = open.find((n) => n.kind === "trip" && n.from && n.to && date >= n.from && date <= n.to);
+    if (trip) return trip.id;
+    const byUse = [...open].sort((a, b) => {
+      const la = (data.entries || []).filter((e) => e.notebookId === a.id).reduce((m, e) => (e.updatedAt > m ? e.updatedAt : m), a.updatedAt || "");
+      const lb = (data.entries || []).filter((e) => e.notebookId === b.id).reduce((m, e) => (e.updatedAt > m ? e.updatedAt : m), b.updatedAt || "");
+      return lb > la ? 1 : -1;
+    });
+    return byUse[0] ? byUse[0].id : null;
+  };
+
+  const writeEntry = (notebookId, preset = {}) => setEntrySheet({
+    isNew: true,
+    entry: { id: uid(), notebookId, date: todayISO(), title: "", body: "", value: null, sessionIds: [], createdAt: nowISO(), ...preset },
+  });
+
   const pages = [
     { id: "calendar", label: "Calendar", icon: CalendarDays },
     { id: "summary", label: "Summary", icon: BarChart3 },
+    { id: "notebooks", label: "Notebooks", icon: BookOpen },
     { id: "params", label: "Parameters", icon: Settings2 },
   ];
 
@@ -1171,9 +1233,19 @@ export default function DayLoad() {
           <Calendar data={data} onAdd={(date) => setSheet({ date })}
             onOpen={(s) => setSheet({ session: s })} onDelete={deleteSession} onFav={toggleFav}
             onDuplicate={(s) => setSheet({ session: { ...s, id: uid(), date: todayISO(), fav: false, _dup: true } })}
-            onTemplate={addTemplate} />
+            onTemplate={addTemplate}
+            focus={calFocus} onFocused={() => setCalFocus(null)}
+            onWrite={(s) => writeEntry(likelyNotebook(s.date), { date: s.date, sessionIds: [s.id] })}
+            onOpenEntry={(e) => { openNotebook(e.notebookId, e.id || null); setPage("notebooks"); }} />
         )}
         {page === "summary" && <Summary data={data} />}
+        {page === "notebooks" && (
+          <Notebooks data={data} openId={nbOpen} setOpenId={openNotebook} focus={nbFocus}
+            onSaveNotebook={saveNotebook} onDeleteNotebook={deleteNotebook}
+            onWrite={writeEntry} onSaveEntry={saveEntry}
+            onEditEntry={(e) => setEntrySheet({ isNew: false, entry: e })}
+            onJump={(s) => { setCalFocus({ id: s.id, date: s.date }); setPage("calendar"); }} />
+        )}
         {page === "params" && <Parameters data={data} update={update} />}
       </main>
 
@@ -1183,7 +1255,7 @@ export default function DayLoad() {
             const Icon = p.icon;
             const on = page === p.id;
             return (
-              <button key={p.id} onClick={() => setPage(p.id)}
+              <button key={p.id} onClick={() => { if (p.id === "notebooks" && page === "notebooks") openNotebook(null); setPage(p.id); }}
                 className={`flex flex-1 flex-col items-center gap-1 py-3 ${on ? "dl-text" : "dl-faint"}`}>
                 <Icon size={20} />
                 <span className="text-xs">{p.label}</span>
@@ -1197,6 +1269,13 @@ export default function DayLoad() {
         <SessionSheet types={data.types} initial={sheet.session} date={sheet.date}
           settings={data.settings} templates={data.templates || []}
           onSave={saveSession} onClose={() => setSheet(null)} />
+      )}
+
+      {entrySheet && (
+        <EntrySheet data={data} initial={entrySheet.entry} isNew={entrySheet.isNew}
+          onClose={() => setEntrySheet(null)}
+          onSave={(e) => { saveEntry(e); setEntrySheet(null); openNotebook(e.notebookId, e.id); setPage("notebooks"); }}
+          onDelete={(id) => { deleteEntry(id); setEntrySheet(null); }} />
       )}
     </div>
   );
@@ -1345,12 +1424,23 @@ function statsFor(vals, met, nDays, wts) {
 /* A. calendar                                                        */
 /* ================================================================== */
 
-function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplate }) {
+function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplate, focus, onFocused, onWrite, onOpenEntry }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [metric, setMetric] = useState("activity");
   const [filter, setFilter] = useState(EMPTY_FILTER);
   const [picked, setPicked] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+
+  // arriving from a notebook: show that session's week, with it open
+  useEffect(() => {
+    if (!focus) return;
+    setWeekStart(startOfWeek(parseISO(focus.date)));
+    setPicked(focus.id);
+    onFocused && onFocused();
+  }, [focus]);
+
+  // days something was written about get a dot under their date
+  const written = useMemo(() => new Set((data.entries || []).map((e) => e.date)), [data.entries]);
 
   const metrics = useMemo(() => metricsFor(data.types, data.settings), [data.types, data.settings]);
   const met = metrics.find((m) => m.id === metric) || metrics[0] || METRICS[0];
@@ -1508,6 +1598,7 @@ function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplat
                 </button>
                 <div className={`text-xs dl-muted ${isToday ? "font-semibold" : ""}`}>{DAY_LETTERS[i]}</div>
                 <div className={`text-xs tabular-nums dl-muted ${isToday ? "font-semibold" : ""}`}>{parseISO(d).getDate()}</div>
+                <span className="mt-0.5 h-1 w-1 rounded-full" style={{ background: written.has(d) ? "var(--muted)" : "transparent" }} />
               </div>
             );
           })}
@@ -1604,6 +1695,7 @@ function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplat
               )}
 
               {s.note && <Note text={s.note} />}
+              <SessionNotes data={data} s={s} onWrite={onWrite} onOpenEntry={onOpenEntry} />
               {s.url && (
                 <a href={s.url} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm underline">
                   <LinkIcon size={14} /> Open in Coros
@@ -1656,7 +1748,7 @@ function Calendar({ data, onAdd, onOpen, onDelete, onFav, onDuplicate, onTemplat
       <FilterPanel types={data.types} sessions={live} filter={filter} setFilter={setFilter}
         allowSubs={data.settings?.showSubs !== false} />
 
-      <History data={data} filter={filter}
+      <History data={data} filter={filter} onOpenEntry={onOpenEntry}
         onPick={(s) => { setWeekStart(startOfWeek(parseISO(s.date))); setPicked(s.id); }} />
     </div>
   );
@@ -1717,7 +1809,7 @@ function condMatch(s, c, types, defs) {
   return c.op === "<" ? v < t : c.op === ">" ? v > t : v === t;
 }
 
-function History({ data, filter, onPick }) {
+function History({ data, filter, onPick, onOpenEntry }) {
   const [open, setOpen] = useState(false);
   const [conds, setConds] = useState([]);
   const [text, setText] = useState("");
@@ -1733,13 +1825,26 @@ function History({ data, filter, onPick }) {
       .slice(0, 60);
   }, [open, data, filter, conds, defs, text]);
 
+  // words also find what you wrote in notebooks; conditions only apply to sessions
+  const noteHits = useMemo(() => {
+    const needle = text.trim().toLowerCase();
+    if (!open || !needle || conds.length) return [];
+    const nbs = data.notebooks || [];
+    const hits = (data.entries || [])
+      .filter((e) => `${e.title || ""}\n${e.body || ""}`.toLowerCase().includes(needle))
+      .map((e) => ({ e, nb: nbs.find((n) => n.id === e.notebookId) }))
+      .filter((h) => h.nb);
+    const pages = nbs.filter((n) => `${n.name}\n${n.body || ""}`.toLowerCase().includes(needle)).map((nb) => ({ nb }));
+    return [...pages, ...hits].slice(0, 20);
+  }, [open, data.entries, data.notebooks, text, conds.length]);
+
   const setCond = (i, patch) => setConds((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
 
   return (
-    <Section title="History" hint={open ? `${results.length} shown` : "search"} open={open} onToggle={() => setOpen(!open)}>
+    <Section title="History" hint={open ? `${results.length + noteHits.length} shown` : "search"} open={open} onToggle={() => setOpen(!open)}>
       <div className="flex items-center gap-2">
         <Search size={16} className="dl-faint" />
-        <input type="text" className={`${smallInput} flex-1`} placeholder="search titles and notes"
+        <input type="text" className={`${smallInput} flex-1`} placeholder="search sessions and notebooks"
           value={text} onChange={(e) => setText(e.target.value)} />
         {text && <button onClick={() => setText("")} className="dl-faint"><X size={14} /></button>}
       </div>
@@ -1789,6 +1894,24 @@ function History({ data, filter, onPick }) {
         <Search size={14} /> Add a condition
       </button>
 
+      {noteHits.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs dl-faint">In your notebooks</div>
+          {noteHits.map((h) => (
+            <button key={h.e ? h.e.id : h.nb.id} onClick={() => onOpenEntry && onOpenEntry(h.e || { notebookId: h.nb.id })}
+              className="flex w-full items-center gap-3 rounded-xl border dl-line px-3 py-2 text-left">
+              <NotebookText size={16} className="shrink-0" style={{ color: shade(h.nb.color) }} />
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs dl-faint">{h.nb.name}{h.e ? ` · ${fmtDay(h.e.date)}` : ""}</span>
+                <span className="block truncate text-sm">{h.e ? firstLine(h.e) : "Notes"}</span>
+              </span>
+              <ChevronRight size={14} className="dl-faint" />
+            </button>
+          ))}
+          {results.length > 0 && <div className="pt-2 text-xs dl-faint">Sessions</div>}
+        </div>
+      )}
+
       <div className="space-y-1">
         {results.map((s) => {
           const c = colorFor(data.types, s);
@@ -1807,7 +1930,7 @@ function History({ data, filter, onPick }) {
             </button>
           );
         })}
-        {open && !results.length && <p className="text-sm dl-faint">Nothing matches.</p>}
+        {open && !results.length && !noteHits.length && <p className="text-sm dl-faint">Nothing matches.</p>}
       </div>
     </Section>
   );
@@ -3201,7 +3324,9 @@ function SyncPanel() {
   const [run, setRun] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  const [photos, setPhotos] = useState({ photos: 0, files: 0 });
   useEffect(() => onSync(setStatus), []);
+  useEffect(() => onPending(setPhotos), []);
 
   const save = (patch) => setCfg(gh.setConfig(patch));
 
@@ -3253,6 +3378,19 @@ function SyncPanel() {
         </span>
       </div>
 
+      {photos.files > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border dl-line px-3 py-2">
+          <span className="text-sm dl-muted">
+            {photos.busy ? "Uploading photos…" : `${photos.photos} photo${photos.photos === 1 ? "" : "s"} waiting to upload`}
+            {photos.error && !photos.busy && <span className="block text-xs" style={{ color: "#F2546B" }}>{photos.error}</span>}
+            {!gh.isLinked() && <span className="block text-xs dl-faint">They go up once this device is linked.</span>}
+          </span>
+          {gh.isLinked() && !photos.busy && (
+            <button onClick={() => flushPending()} className="rounded-lg border dl-line px-3 py-1.5 text-xs dl-muted">Upload now</button>
+          )}
+        </div>
+      )}
+
       <div className="space-y-2">
         <label className="block text-xs dl-faint">GitHub account</label>
         <input className={inputCls} placeholder="your github username" value={cfg.owner}
@@ -3276,7 +3414,7 @@ function SyncPanel() {
           className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
           {checking ? "Checking\u2026" : "Check and sync"}
         </button>
-        <button onClick={() => store.syncNow()}
+        <button onClick={() => { store.syncNow(); flushPending(); }}
           className="rounded-xl border dl-line px-3 py-2 text-sm dl-muted">
           Sync now
         </button>
@@ -3364,6 +3502,1956 @@ function Backup({ data }) {
           <button onClick={doImport} className="dl-accent mt-2 rounded-xl px-4 py-2 text-sm font-medium">Replace everything with this</button>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* D. notebooks                                                       */
+/* ================================================================== */
+
+/* Three kinds, because "Achilles rehab", "Madeira, 4 days" and "2026
+   goals" are not the same kind of writing. A journal is a thread you
+   keep adding to; a trip is a closed stretch of days whose sessions
+   appear by themselves; a page is one document you rewrite.
+
+   Entries live in data.entries, not inside the notebook, so that two
+   devices writing in the same notebook merge entry by entry instead of
+   one overwriting the other. A page's text lives on the notebook
+   itself — it is one document, and last write wins. */
+
+const NB_KINDS = {
+  journal: { label: "Journal", icon: NotebookPen,  hint: "An ongoing thread you add to over weeks — a rehab, a build-up, a block of training." },
+  trip:    { label: "Trip",    icon: Mountain,     hint: "A closed stretch of days. The sessions you logged in that range appear on their own." },
+  page:    { label: "Page",    icon: NotebookText, hint: "One living document you rewrite — goals, a race plan, a kit list." },
+};
+
+const fmtDay = (iso) => parseISO(iso).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+const fmtShort = (iso) => parseISO(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+const fmtMonth = (iso) => parseISO(iso).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+function ago(ts) {
+  if (!ts) return "";
+  const d = dayDiff(todayISO(), fmtISO(new Date(ts)));
+  if (d <= 0) return "today";
+  if (d === 1) return "yesterday";
+  if (d < 14) return `${d} days ago`;
+  if (d < 60) return `${Math.round(d / 7)} weeks ago`;
+  return fmtShort(fmtISO(new Date(ts)));
+}
+
+const entriesOf = (data, id) => (data.entries || []).filter((e) => e.notebookId === id);
+
+// the last time anything in a notebook moved, which is what the list sorts by
+function touchedAt(nb, entries) {
+  let t = nb.updatedAt || "";
+  for (const e of entries) if (e.notebookId === nb.id && (e.updatedAt || "") > t) t = e.updatedAt;
+  return t;
+}
+
+const writable = (nb) => nb && nb.kind !== "page" && !nb.archived;
+
+function sessionsBetween(data, from, to) {
+  return liveSessions(data).filter((s) => s.date >= from && s.date <= to)
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+// the two or three numbers that identify a session at a glance
+function brief(s) {
+  const v = s.values || {};
+  const out = [];
+  const dist = num(v.distance), up = num(v.elevPos), dur = num(v.duration);
+  if (dist) out.push(`${round(dist, 1)} km`);
+  if (up) out.push(`${round(up, 0)} m+`);
+  if (!out.length && dur) out.push(`${round(dur, 0)} min`);
+  return out.join(" · ");
+}
+
+function tripTotals(list) {
+  let km = 0, up = 0, mins = 0;
+  for (const s of list) {
+    km += num(s.values?.distance) || 0;
+    up += num(s.values?.elevPos) || 0;
+    mins += num(s.values?.duration) || 0;
+  }
+  return { km, up, mins };
+}
+
+/* ---------- a small markdown, just enough to write with ---------- */
+
+const CHECK = /^(\s*)[-*] \[( |x|X)\] (.*)$/;
+
+function toggleLine(text, i) {
+  const lines = text.split("\n");
+  const m = lines[i] && lines[i].match(CHECK);
+  if (!m) return text;
+  lines[i] = `${m[1]}- [${m[2] === " " ? "x" : " "}] ${m[3]}`;
+  return lines.join("\n");
+}
+
+function inline(txt, key) {
+  const parts = String(txt).split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g);
+  return parts.map((p, i) => {
+    if (/^\*\*[^*]+\*\*$/.test(p)) return <strong key={`${key}-${i}`} className="font-semibold dl-text">{p.slice(2, -2)}</strong>;
+    if (/^\*[^*]+\*$/.test(p)) return <em key={`${key}-${i}`}>{p.slice(1, -1)}</em>;
+    return p;
+  });
+}
+
+function Prose({ text, onToggle, clamp = 0, color }) {
+  const [open, setOpen] = useState(false);
+  const all = String(text || "").replace(/\s+$/, "").split("\n");
+  const cut = clamp > 0 && !open && all.length > clamp;
+  const lines = cut ? all.slice(0, clamp) : all;
+  return (
+    <div className="space-y-1 text-sm leading-relaxed dl-muted">
+      {lines.map((ln, i) => {
+        const c = ln.match(CHECK);
+        if (c) {
+          const done = c[2] !== " ";
+          return (
+            <button key={i} type="button" disabled={!onToggle}
+              onClick={(e) => { e.stopPropagation(); onToggle && onToggle(i); }}
+              className="flex w-full items-start gap-2 text-left" style={{ paddingLeft: c[1].length * 8 }}>
+              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border"
+                style={{ borderColor: done ? color || "var(--text)" : "var(--faint)", background: done ? color || "var(--text)" : "transparent" }}>
+                {done && <Check size={12} color="var(--bg)" strokeWidth={3} />}
+              </span>
+              <span className={done ? "line-through dl-faint" : ""}>{inline(c[3], i)}</span>
+            </button>
+          );
+        }
+        const h = ln.match(/^(#{1,3}) (.*)$/);
+        if (h) return <div key={i} className={`${h[1].length === 1 ? "text-base" : "text-sm"} pt-2 font-semibold dl-text`}>{inline(h[2], i)}</div>;
+        const b = ln.match(/^(\s*)[-*] (.*)$/);
+        if (b) return <div key={i} className="flex gap-2" style={{ paddingLeft: b[1].length * 8 }}><span className="dl-faint">•</span><span>{inline(b[2], i)}</span></div>;
+        const n = ln.match(/^(\s*)(\d+)[.)] (.*)$/);
+        if (n) return <div key={i} className="flex gap-2" style={{ paddingLeft: n[1].length * 8 }}><span className="tabular-nums dl-faint">{n[2]}.</span><span>{inline(n[3], i)}</span></div>;
+        if (!ln.trim()) return <div key={i} className="h-1" />;
+        return <p key={i} className="whitespace-pre-wrap">{inline(ln, i)}</p>;
+      })}
+      {cut && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); setOpen(true); }} className="text-xs underline dl-faint">
+          read the rest
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ---------- the values a journal follows ---------- */
+
+/* A rehab is followed on more than one number: morning stiffness, pain
+   during, pain the day after. A journal holds a list of measures, and an
+   entry a value per measure in e.vals. Journals made before this had a
+   single track.name and stored it as e.value; that reads as a measure
+   called "main", so nothing written earlier is lost or rewritten. */
+function measuresOf(nb) {
+  if (!nb || !nb.track) return [];
+  const ms = nb.track.measures;
+  if (ms && ms.length) return ms;
+  return [{ id: "main", name: nb.track.name || "Value", lowerBetter: nb.track.lowerBetter !== false }];
+}
+function valOf(e, m) {
+  const v = e.vals ? e.vals[m.id] : undefined;
+  if (v !== null && v !== undefined) return v;
+  if (m.id === "main" && e.value !== null && e.value !== undefined && !(e.vals && "main" in e.vals)) return e.value;
+  return null;
+}
+const hasVals = (e, nb) => measuresOf(nb).some((m) => valOf(e, m) !== null);
+
+// the first measure wears the notebook's colour; the others take distant slots
+const EXTRA_COLORS = ["#3FA9E0", "#F2C230", "#B57BE0", "#4ED9B4"];
+function measureColor(nb, i) {
+  if (i === 0) return shade(nb.color);
+  const own = shade(nb.color);
+  const pool = EXTRA_COLORS.map(shade).filter((c) => c !== own);
+  return pool[(i - 1) % pool.length];
+}
+
+/* ---------- which activities a tracked value is about ---------- */
+
+/* A tendon hurts on runs and hikes, not on the bike. So a tracked value
+   is compared against one metric (or nothing), summed per day over only
+   the activities it concerns. Activities are keys: "run" is every run,
+   "run/<id>" narrows it to one subtype. Nothing chosen means all. */
+const sessionKey = (s) => [s.typeId, ...(s.path || [])].join("/");
+const concerns = (s, acts) => !acts || !acts.length
+  || acts.some((k) => { const sk = sessionKey(s); return sk === k || sk.startsWith(k + "/"); });
+const againstOf = (track) => (track && track.against !== undefined ? track.against : "load");
+
+function actsLabel(types, acts) {
+  if (!acts || !acts.length) return "all activities";
+  return acts.map((k) => {
+    const [root, ...path] = k.split("/");
+    const t = findRoot(types, root);
+    if (!t) return null;
+    return path.length ? pathNames(t, path).join(" › ") || t.name : t.name;
+  }).filter(Boolean).join(", ").toLowerCase();
+}
+
+/* ---------- the tracked value, drawn against what you did ---------- */
+
+/* For a rehab the question is never "what was my pain", it is "what was
+   my pain given what I'd been doing". So the value is drawn over faint
+   bars of daily training load, on its own 0–10 axis. */
+/* Everything the tracked chart draws, worked out once, so the app and
+   the exported page cannot disagree. Null when there is too little. */
+function trackSeries(data, nb, entries) {
+  const ms = measuresOf(nb);
+  const acts = nb.track.acts || [];
+  const withVals = entries.filter((e) => hasVals(e, nb)).sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  // the session slider, if the journal draws one: a daily mean over the activities it concerns
+  const fromKey = nb.track.fromSessions || null;
+  const fromLabel = fromKey ? ((allSliderKeys(data.types).find((x) => x.key === fromKey) || {}).label || fromKey) : "";
+  const sessDaily = {};
+  if (fromKey) {
+    const acc = {};
+    for (const s of liveSessions(data)) {
+      if (!concerns(s, acts)) continue;
+      const v = metricValue(s, fromKey, data.types);
+      if (v === null || v === undefined) continue;
+      (acc[s.date] = acc[s.date] || []).push(v);
+    }
+    for (const [d, vs] of Object.entries(acc)) sessDaily[d] = vs.reduce((x, y) => x + y, 0) / vs.length;
+  }
+
+  // the span: from the first thing written with a value (or the journal's start) to today
+  const start = withVals.length ? withVals[0].date
+    : entries.length ? entries.reduce((m, e) => (e.date < m ? e.date : m), entries[0].date)
+    : nb.createdAt ? fmtISO(new Date(nb.createdAt)) : null;
+  if (!start) return null;
+  const from = fmtISO(addDays(parseISO(start), -3));
+  const lastDate = withVals.length ? withVals[withVals.length - 1].date : todayISO();
+  const to = lastDate > todayISO() ? lastDate : todayISO();
+  const sessPts = Object.keys(sessDaily).filter((d) => d >= from && d <= to).length;
+  if (withVals.length < 2 && sessPts < 2) return null;
+
+  const against = againstOf(nb.track);
+  const met = against ? (METRICS.find((m) => m.id === against) || metricsFor(data.types, data.settings).find((m) => m.id === against) || { id: against, label: against, unit: "" }) : null;
+  const loads = {};
+  if (met) for (const s of liveSessions(data)) {
+    if (s.date < from || s.date > to || !concerns(s, acts)) continue;
+    const v = metricValue(s, against, data.types);
+    if (v !== null) loads[s.date] = (loads[s.date] || 0) + v;
+  }
+  const metLabel = met ? (FIELDS[against] ? FIELDS[against].label : met.label) : "";
+  const unit = met ? unitLabel(against) || met.unit || "" : "";
+
+  const byDate = {};
+  for (const e of withVals) byDate[e.date] = e; // the last entry of a day speaks for it
+  const rows = [];
+  for (let d = parseISO(from); fmtISO(d) <= to; d = addDays(d, 1)) {
+    const iso = fmtISO(d);
+    const row = { iso, label: fmtShort(iso), load: loads[iso] || 0, sess: sessDaily[iso] ?? null };
+    ms.forEach((m) => { row[`m_${m.id}`] = byDate[iso] ? valOf(byDate[iso], m) : null; });
+    rows.push(row);
+  }
+
+  // first → last for the lead measure, coloured by whether that is progress
+  const lead = ms[0];
+  const leadPts = withVals.map((e) => valOf(e, lead)).filter((v) => v !== null);
+  const first = leadPts[0], last = leadPts[leadPts.length - 1];
+  const better = lead.lowerBetter !== false ? last < first : last > first;
+  const colors = ms.map((m, i) => measureColor(nb, i));
+  return { rows, ms, met, metLabel, unit, fromKey, fromLabel, acts, colors, lead, leadPts, first, last, better };
+}
+
+function TrackChart({ data, nb, entries }) {
+  const th = theme(data.settings);
+  const T = trackSeries(data, nb, entries);
+  if (!T) return null;
+  const { rows, ms, met, metLabel, unit, fromKey, fromLabel, acts, lead, leadPts, first, last, better } = T;
+
+  return (
+    <div className={`${card} p-3`}>
+      <div className="mb-1 flex items-baseline justify-between px-1">
+        <span className="text-sm dl-muted">{ms.map((m) => m.name).join(" · ")}</span>
+        {leadPts.length > 1 && (
+          <span className="text-xs tabular-nums dl-faint">
+            {lead.name} {round(first, 1)} → <span style={{ color: last === first ? undefined : better ? "#4BE37A" : "#F2546B" }}>{round(last, 1)}</span>
+          </span>
+        )}
+      </div>
+      <div style={{ height: 160 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={rows} margin={{ top: 6, right: 4, bottom: 0, left: -28 }}>
+            <CartesianGrid stroke={th.grid} vertical={false} />
+            <XAxis dataKey="label" tick={{ fill: th.faint, fontSize: 10 }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={28} />
+            <YAxis yAxisId="v" domain={[0, 10]} ticks={[0, 5, 10]} tick={{ fill: th.faint, fontSize: 10 }} tickLine={false} axisLine={false} />
+            <YAxis yAxisId="l" orientation="right" hide />
+            <Tooltip cursor={{ fill: th.grid }} content={({ active, payload, label }) => {
+              if (!active || !payload?.length) return null;
+              const r = payload[0].payload;
+              return (
+                <div className="rounded-xl border px-3 py-2 text-xs" style={{ background: th.bg, borderColor: th.line, color: th.text }}>
+                  <div style={{ color: th.faint }}>{label}</div>
+                  {ms.map((m, i) => r[`m_${m.id}`] !== null && (
+                    <div key={m.id} className="tabular-nums" style={{ color: measureColor(nb, i) }}>{m.name}: {r[`m_${m.id}`]}</div>
+                  ))}
+                  {r.sess !== null && <div className="tabular-nums" style={{ color: th.muted }}>{fromLabel} (sessions): {round(r.sess, 1)}</div>}
+                  {met && r.load > 0 && <div className="tabular-nums" style={{ color: th.faint }}>{metLabel}: {round(r.load, 1)} {unit}</div>}
+                </div>
+              );
+            }} />
+            {met && <Bar yAxisId="l" dataKey="load" fill={th.faint} opacity={0.35} radius={[2, 2, 0, 0]} isAnimationActive={false} />}
+            {fromKey && <Line yAxisId="v" dataKey="sess" stroke={th.muted} strokeWidth={1.5} strokeDasharray="4 3" connectNulls dot={false} isAnimationActive={false} />}
+            {ms.map((m, i) => (
+              <Line key={m.id} yAxisId="v" dataKey={`m_${m.id}`} stroke={measureColor(nb, i)} strokeWidth={2} connectNulls
+                dot={{ r: 3, fill: measureColor(nb, i), strokeWidth: 0 }} isAnimationActive={false} />
+            ))}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 px-1 text-xs dl-faint">
+        {ms.map((m, i) => (
+          <span key={m.id} className="flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-4 rounded" style={{ background: measureColor(nb, i) }} />{m.name}
+          </span>
+        ))}
+        {fromKey && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: th.muted }} />{fromLabel} from sessions
+          </span>
+        )}
+        {met && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-sm" style={{ background: th.faint, opacity: 0.5 }} />{metLabel.toLowerCase()} per day
+          </span>
+        )}
+        {(met || fromKey) && <span className="w-full">Counting {actsLabel(data.types, acts)}.</span>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- pieces ---------- */
+
+function SessionChip({ s, types, onClick }) {
+  const c = colorFor(types, s);
+  return (
+    <button type="button" onClick={(e) => { e.stopPropagation(); onClick && onClick(s); }}
+      className="flex max-w-full items-center gap-2 rounded-full border dl-line px-2.5 py-1 text-left text-xs">
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: c }} />
+      <span className="truncate dl-muted">{s.title || labelFor(types, s)}</span>
+      {brief(s) && <span className="shrink-0 tabular-nums dl-faint">{brief(s)}</span>}
+    </button>
+  );
+}
+
+function ValueChip({ name, value, lowerBetter }) {
+  if (value === null || value === undefined) return null;
+  // coloured by how good it is, not by the notebook: a 7 of pain should look like one
+  const t = lowerBetter !== false ? value / 10 : 1 - value / 10;
+  const col = t < 0.34 ? "#4BE37A" : t < 0.67 ? "#F2C230" : "#F2546B";
+  return (
+    <span className="inline-flex shrink-0 items-baseline gap-1 rounded-full border px-2 py-0.5 text-xs" style={{ borderColor: col, color: col }}>
+      {name} <span className="tabular-nums font-medium">{round(value, 1)}</span>
+    </span>
+  );
+}
+
+// every value an entry holds; compact shows the first and how many more
+function ValueChips({ nb, e, compact = false }) {
+  const set = measuresOf(nb).map((m) => ({ m, v: valOf(e, m) })).filter((x) => x.v !== null);
+  if (!set.length) return null;
+  const shown = compact ? set.slice(0, 1) : set;
+  return (
+    <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+      {shown.map(({ m, v }) => <ValueChip key={m.id} name={m.name} value={v} lowerBetter={m.lowerBetter} />)}
+      {compact && set.length > 1 && <span className="text-xs dl-faint">+{set.length - 1}</span>}
+    </span>
+  );
+}
+
+// the first thing an entry says, for its closed row
+function firstLine(e) {
+  if (e.title) return e.title;
+  const l = (e.body || "").split("\n").map((x) => x.replace(LIST_PREFIX, "").replace(/\*/g, "").trim()).find(Boolean);
+  if (l) return l;
+  return (e.attachments || []).length ? "Photo or sketch" : "(empty entry)";
+}
+
+/* An entry is a row until it's opened. Closed, it shows its date, its
+   first line and its tracked value — enough to scan twenty-five of them.
+   Open, it shows everything, and editing is a button rather than a tap
+   on the card, so ticking a box or opening a photo can't start an edit. */
+function EntryCard({ e, nb, data, focused, open, onOpen, onEdit, onToggle, onJump, showDate = true }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (focused && ref.current) ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focused]);
+  const linked = (e.sessionIds || []).map((id) => data.sessions.find((s) => s.id === id)).filter(Boolean);
+  const nAtt = (e.attachments || []).length;
+  return (
+    <div ref={ref} className={card}
+      style={focused ? { outline: `2px solid ${shade(nb.color) || "var(--text)"}`, outlineOffset: 2 } : undefined}>
+      <button type="button" onClick={() => onOpen(e.id)} aria-expanded={open}
+        className={`flex w-full items-center gap-3 text-left ${open ? "px-4 pt-4" : "px-4 py-3"}`}>
+        <span className="min-w-0 flex-1">
+          {showDate && <span className="block text-xs tabular-nums dl-faint">{fmtDay(e.date)}</span>}
+          <span className={`block truncate ${e.title ? "font-medium" : "text-sm dl-muted"} ${open && !e.title ? "hidden" : ""}`}>{firstLine(e)}</span>
+        </span>
+        {!open && nAtt > 0 && <span className="flex shrink-0 items-center gap-0.5 text-xs dl-faint"><Paperclip size={12} />{nAtt}</span>}
+        {!open && linked.length > 0 && <span className="flex shrink-0 items-center gap-0.5 text-xs dl-faint"><LinkIcon size={12} />{linked.length}</span>}
+        <ValueChips nb={nb} e={e} compact={!open} />
+        {open ? <ChevronDown size={16} className="shrink-0 dl-faint" /> : <ChevronRight size={16} className="shrink-0 dl-faint" />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          {e.body && <div className="mt-2"><Prose text={e.body} color={shade(nb.color)} onToggle={(i) => onToggle(e, i)} /></div>}
+          <AttachmentStrip items={e.attachments} />
+          {linked.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {linked.map((s) => <SessionChip key={s.id} s={s} types={data.types} onClick={onJump} />)}
+            </div>
+          )}
+          <div className="mt-3 flex justify-end">
+            <button onClick={() => onEdit(e)} className="flex items-center gap-1 rounded-lg border dl-line px-3 py-1.5 text-sm dl-muted">
+              <Pencil size={14} /> Edit
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Which rows are open, per notebook view. Arriving at an entry (from the
+   calendar or a search) opens it; everything else starts closed. */
+function useOpenSet(initial) {
+  const [open, setOpen] = useState(() => new Set(initial.filter(Boolean)));
+  const add = (...ids) => setOpen((o) => { const n = new Set(o); ids.filter(Boolean).forEach((x) => n.add(x)); return n; });
+  return {
+    has: (id) => open.has(id),
+    flip: (id) => setOpen((o) => { const n = new Set(o); if (n.has(id)) n.delete(id); else n.add(id); return n; }),
+    add,
+    set: (ids) => setOpen(new Set(ids)),
+    size: open.size,
+  };
+}
+
+function OpenAllBar({ count, noun, allOpen, onAll, onNone }) {
+  if (count < 2) return null;
+  return (
+    <div className="flex items-center justify-between px-1 pt-1">
+      <span className="text-xs dl-faint">{count} {noun}</span>
+      <button onClick={allOpen ? onNone : onAll} className="flex items-center gap-1 text-xs dl-muted">
+        {allOpen ? <><ChevronsDownUp size={14} /> Close all</> : <><ChevronsUpDown size={14} /> Open all</>}
+      </button>
+    </div>
+  );
+}
+
+/* ---------- the tab ---------- */
+
+function Notebooks({ data, openId, setOpenId, focus, onSaveNotebook, onDeleteNotebook, onWrite, onEditEntry, onSaveEntry, onJump }) {
+  const [query, setQuery] = useState("");
+  const [sheet, setSheet] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const notebooks = data.notebooks || [];
+  const entries = data.entries || [];
+
+  const open = notebooks.find((n) => n.id === openId);
+  if (open) {
+    return (
+      <>
+        <NotebookView key={open.id} data={data} nb={open} focus={focus} onBack={() => setOpenId(null)}
+          onEdit={() => setSheet({ nb: open })} onSave={onSaveNotebook}
+          onWrite={onWrite} onEditEntry={onEditEntry} onSaveEntry={onSaveEntry} onJump={onJump} />
+        {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)}
+          onSave={(n) => { onSaveNotebook(n); setSheet(null); }}
+          onDelete={(id) => { onDeleteNotebook(id); setSheet(null); setOpenId(null); }} />}
+      </>
+    );
+  }
+
+  const q = query.trim().toLowerCase();
+  const hits = q ? [
+    ...notebooks.filter((n) => (n.name || "").toLowerCase().includes(q) || (n.body || "").toLowerCase().includes(q))
+      .map((n) => ({ kind: "nb", nb: n, text: n.kind === "page" ? n.body || "" : "" })),
+    ...entries.filter((e) => `${e.title || ""}\n${e.body || ""}`.toLowerCase().includes(q))
+      .map((e) => ({ kind: "entry", e, nb: notebooks.find((n) => n.id === e.notebookId), text: `${e.title ? e.title + " — " : ""}${e.body || ""}` })),
+  ].filter((h) => h.nb) : [];
+
+  const snippet = (text) => {
+    // search what you'd read, not the markdown underneath it
+    const flat = text.split("\n").filter((l) => l.trim()).map((l) => l.replace(/^\s*(#{1,3} |[-*] \[[ xX]\] |[-*] |\d+[.)] )/, "")).join(" · ")
+      .replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\s+/g, " ");
+    const i = flat.toLowerCase().indexOf(q);
+    if (i < 0) return flat.slice(0, 90);
+    const a = Math.max(0, i - 40);
+    return (
+      <>
+        {a > 0 ? "…" : ""}{flat.slice(a, i)}
+        <mark style={{ background: "var(--abg)", color: "var(--atext)", borderRadius: 3, padding: "0 2px" }}>{flat.slice(i, i + q.length)}</mark>
+        {flat.slice(i + q.length, i + q.length + 60)}…
+      </>
+    );
+  };
+
+  const sorted = [...notebooks].sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return touchedAt(b, entries) > touchedAt(a, entries) ? 1 : -1;
+  });
+  const active = sorted.filter((n) => !n.archived);
+  const archived = sorted.filter((n) => n.archived);
+
+  const starters = [
+    { kind: "journal", name: "Achilles rehab", track: { name: "Pain", lowerBetter: true } },
+    { kind: "trip", name: "A trip", from: todayISO(), to: fmtISO(addDays(new Date(), 3)) },
+    { kind: "page", name: "Season goals", body: "# This season\n- [ ] first goal\n- [ ] second goal" },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 text-base font-medium">Notebooks</div>
+        <button onClick={() => setSheet({})} className="dl-accent flex items-center gap-1 rounded-xl px-3 py-2 text-sm font-medium">
+          <Plus size={16} /> New
+        </button>
+      </div>
+
+      {notebooks.length > 0 && (
+        <div className="relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 dl-faint" />
+          <input className={`${inputCls} pl-9`} placeholder="Search every notebook" value={query} onChange={(e) => setQuery(e.target.value)} />
+          {query && <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 dl-faint"><X size={16} /></button>}
+        </div>
+      )}
+
+      {q ? (
+        <div className="space-y-2">
+          {hits.length === 0 && <div className="py-6 text-center text-sm dl-faint">Nothing matches “{query}”.</div>}
+          {hits.map((h, i) => (
+            <button key={i} onClick={() => { setQuery(""); setOpenId(h.nb.id, h.kind === "entry" ? h.e.id : null); }}
+              className={`${card} block w-full p-3 text-left`} style={{ borderLeftColor: shade(h.nb.color), borderLeftWidth: 4 }}>
+              <div className="flex items-baseline justify-between gap-2 text-xs dl-faint">
+                <span>{h.nb.name}</span>
+                {h.kind === "entry" && <span className="tabular-nums">{fmtDay(h.e.date)}</span>}
+              </div>
+              {h.text && <div className="mt-1 text-sm dl-muted">{snippet(h.text)}</div>}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+          {notebooks.length === 0 && (
+            <div className={`${card} p-5`}>
+              <div className="font-medium">Somewhere to keep what the numbers don't</div>
+              <p className="mt-1 text-sm dl-muted">Start from one of these, or make your own.</p>
+              <div className="mt-4 space-y-2">
+                {starters.map((st) => {
+                  const Icon = NB_KINDS[st.kind].icon;
+                  return (
+                    <button key={st.kind} onClick={() => setSheet({ nb: { ...st, _new: true } })}
+                      className="flex w-full items-start gap-3 rounded-xl border dl-line p-3 text-left">
+                      <Icon size={18} className="mt-0.5 shrink-0 dl-muted" />
+                      <span>
+                        <span className="block text-sm">{NB_KINDS[st.kind].label}</span>
+                        <span className="block text-xs dl-faint">{NB_KINDS[st.kind].hint}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {active.map((nb) => <NotebookCard key={nb.id} nb={nb} data={data} onOpen={() => setOpenId(nb.id)} />)}
+
+          {archived.length > 0 && (
+            <div>
+              <button onClick={() => setShowArchived(!showArchived)} className="flex items-center gap-2 py-2 text-sm dl-faint">
+                {showArchived ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Archived ({archived.length})
+              </button>
+              {showArchived && <div className="space-y-3 opacity-70">
+                {archived.map((nb) => <NotebookCard key={nb.id} nb={nb} data={data} onOpen={() => setOpenId(nb.id)} />)}
+              </div>}
+            </div>
+          )}
+        </>
+      )}
+
+      {sheet && <NotebookSheet data={data} initial={sheet.nb} onClose={() => setSheet(null)}
+        onSave={(n) => { onSaveNotebook(n); setSheet(null); setOpenId(n.id); }}
+        onDelete={(id) => { onDeleteNotebook(id); setSheet(null); }} />}
+    </div>
+  );
+}
+
+function NotebookCard({ nb, data, onOpen }) {
+  const K = NB_KINDS[nb.kind] || NB_KINDS.journal;
+  const Icon = K.icon;
+  const list = entriesOf(data, nb.id);
+  const color = shade(nb.color);
+  let meta = null, extra = null;
+
+  if (nb.kind === "journal") {
+    const last = list.reduce((m, e) => (e.date > m ? e.date : m), "");
+    meta = list.length ? `${list.length} entr${list.length === 1 ? "y" : "ies"} · last ${fmtShort(last)}` : "No entries yet";
+    if (nb.track) {
+      const lead = measuresOf(nb)[0];
+      const pts = list.map((e) => ({ date: e.date, value: valOf(e, lead) })).filter((p) => p.value !== null).sort((a, b) => (a.date < b.date ? -1 : 1)).slice(-12);
+      if (pts.length > 1) {
+        const w = 72, h = 22;
+        const d = pts.map((e, i) => `${i ? "L" : "M"}${(i / (pts.length - 1)) * w},${h - (e.value / 10) * h}`).join(" ");
+        extra = (
+          <span className="flex items-center gap-2">
+            <svg width={w} height={h + 2} viewBox={`0 -1 ${w} ${h + 2}`} aria-hidden="true">
+              <path d={d} fill="none" stroke={color} strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />
+            </svg>
+            <span className="text-xs tabular-nums dl-faint">{lead.name} {round(pts[pts.length - 1].value, 1)}</span>
+          </span>
+        );
+      }
+    }
+  } else if (nb.kind === "trip") {
+    const days = nb.from && nb.to ? dayDiff(nb.to, nb.from) + 1 : 0;
+    const ss = nb.from && nb.to ? sessionsBetween(data, nb.from, nb.to) : [];
+    const t = tripTotals(ss);
+    meta = nb.from ? `${fmtShort(nb.from)} – ${fmtShort(nb.to)} · ${days} day${days === 1 ? "" : "s"}` : "No dates yet";
+    if (ss.length) extra = <span className="text-xs tabular-nums dl-faint">{ss.length} session{ss.length === 1 ? "" : "s"}{t.km ? ` · ${round(t.km, 0)} km` : ""}{t.up ? ` · ${round(t.up, 0)} m+` : ""}</span>;
+  } else {
+    const lines = (nb.body || "").split("\n");
+    const boxes = lines.filter((l) => CHECK.test(l));
+    const done = boxes.filter((l) => !/\[ \]/.test(l)).length;
+    meta = `Edited ${ago(nb.updatedAt)}`;
+    if (boxes.length) extra = (
+      <span className="flex items-center gap-2">
+        <span className="h-1.5 w-16 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
+          <span className="block h-full rounded-full" style={{ width: `${(done / boxes.length) * 100}%`, background: color }} />
+        </span>
+        <span className="text-xs tabular-nums dl-faint">{done}/{boxes.length} done</span>
+      </span>
+    );
+  }
+
+  return (
+    <button onClick={onOpen} className={`${card} block w-full p-4 text-left`} style={{ borderLeftColor: color, borderLeftWidth: 4 }}>
+      <div className="flex items-center gap-2">
+        <Icon size={16} style={{ color }} className="shrink-0" />
+        <span className="flex-1 truncate font-medium">{nb.name || "Untitled"}</span>
+        {nb.pinned && <Pin size={14} className="dl-faint" />}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <span className="text-xs dl-faint">{K.label} · {meta}</span>
+        {extra}
+      </div>
+    </button>
+  );
+}
+
+/* ---------- one notebook ---------- */
+
+function NotebookView({ data, nb, focus, onBack, onEdit, onSave, onWrite, onEditEntry, onSaveEntry, onJump }) {
+  const [exporting, setExporting] = useState(false);
+  const K = NB_KINDS[nb.kind] || NB_KINDS.journal;
+  const color = shade(nb.color);
+  const list = entriesOf(data, nb.id).sort((a, b) => (a.date === b.date ? ((a.createdAt || "") < (b.createdAt || "") ? 1 : -1) : a.date < b.date ? 1 : -1));
+  const toggle = (e, i) => onSaveEntry({ ...e, body: toggleLine(e.body || "", i) });
+  const rows = useOpenSet([focus]);
+  useEffect(() => { if (focus) rows.add(focus); }, [focus]);
+  const allOpen = list.length > 0 && list.every((e) => rows.has(e.id));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="rounded-xl border dl-line p-2 dl-muted" aria-label="All notebooks"><ChevronLeft size={18} /></button>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-base font-medium">{nb.name || "Untitled"}</div>
+          <div className="text-xs dl-faint" style={{ color }}>
+            {K.label}
+            {nb.kind === "trip" && nb.from ? ` · ${fmtShort(nb.from)} – ${fmtShort(nb.to)}, ${dayDiff(nb.to, nb.from) + 1} days` : ""}
+            {nb.archived ? " · archived" : ""}
+          </div>
+        </div>
+        <button onClick={() => onSave({ ...nb, pinned: !nb.pinned })} className={`rounded-xl border dl-line p-2 ${nb.pinned ? "dl-text" : "dl-faint"}`} aria-label={nb.pinned ? "Unpin" : "Pin to the top"}>
+          <Pin size={18} fill={nb.pinned ? "currentColor" : "none"} />
+        </button>
+        <button onClick={() => setExporting(true)} className="rounded-xl border dl-line p-2 dl-muted" aria-label="Export or share"><Share2 size={18} /></button>
+        <button onClick={onEdit} className="rounded-xl border dl-line p-2 dl-muted" aria-label="Notebook settings"><Pencil size={18} /></button>
+      </div>
+      {exporting && <ExportSheet data={data} nb={nb} onClose={() => setExporting(false)} />}
+
+      {nb.kind === "page" && <DocBody nb={nb} onSave={onSave} startEditing={!nb.body && !(nb.attachments || []).length} />}
+
+      {nb.kind === "journal" && (
+        <>
+          {nb.track && <TrackChart data={data} nb={nb} entries={list} />}
+          <DocBody nb={nb} onSave={onSave} title="Notes" clamp={8}
+            empty="Notes for the whole journal — protocol, contacts, what to watch for" />
+          {!nb.archived && (
+            <button onClick={() => onWrite(nb.id, {})} className="dl-accent flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium">
+              <Plus size={16} /> Write an entry
+            </button>
+          )}
+          {list.length === 0 && <div className="py-6 text-center text-sm dl-faint">Nothing written here yet.</div>}
+          <OpenAllBar count={list.length} noun="entries" allOpen={allOpen}
+            onAll={() => rows.set(list.map((e) => e.id))} onNone={() => rows.set([])} />
+          {list.map((e, i) => {
+            const month = fmtMonth(e.date);
+            const newMonth = i === 0 || fmtMonth(list[i - 1].date) !== month;
+            return (
+              <React.Fragment key={e.id}>
+                {newMonth && <div className="px-1 pt-2 text-xs uppercase tracking-wide dl-faint">{month}</div>}
+                <EntryCard e={e} nb={nb} data={data} focused={focus === e.id} open={rows.has(e.id)} onOpen={rows.flip}
+                  onEdit={onEditEntry} onToggle={toggle} onJump={onJump} />
+              </React.Fragment>
+            );
+          })}
+        </>
+      )}
+
+      {nb.kind === "trip" && <TripBody data={data} nb={nb} list={list} focus={focus} rows={rows} onSave={onSave} onWrite={onWrite} onEditEntry={onEditEntry} onToggle={toggle} onJump={onJump} />}
+    </div>
+  );
+}
+
+function TripBody({ data, nb, list, focus, rows, onSave, onWrite, onEditEntry, onToggle, onJump }) {
+  if (!nb.from || !nb.to) return <div className={`${card} p-5 text-sm dl-muted`}>Give this trip its dates (pencil, top right) and its sessions will appear here.</div>;
+  const color = shade(nb.color);
+  const days = [];
+  for (let d = parseISO(nb.from); fmtISO(d) <= nb.to; d = addDays(d, 1)) days.push(fmtISO(d));
+  const ss = sessionsBetween(data, nb.from, nb.to);
+  const t = tripTotals(ss);
+  const outside = list.filter((e) => e.date < nb.from || e.date > nb.to).sort((a, b) => (a.date < b.date ? -1 : 1));
+  // arriving at an entry inside a day opens that day
+  useEffect(() => {
+    const e = focus && list.find((x) => x.id === focus);
+    if (e) rows.add(`day:${e.date}`);
+  }, [focus]);
+  const allKeys = [...days.map((d) => `day:${d}`), ...outside.map((e) => e.id)];
+  const allOpen = allKeys.every((k) => rows.has(k));
+
+  return (
+    <>
+      <div className="grid grid-cols-3 gap-2">
+        <Tile value={ss.length} label={`session${ss.length === 1 ? "" : "s"}`} />
+        <Tile value={t.km ? round(t.km, 1) : "–"} label="km" />
+        <Tile value={t.up ? round(t.up, 0) : "–"} label="m climbed" />
+      </div>
+
+      <DocBody nb={nb} onSave={onSave} title="Trip notes" clamp={16}
+        empty="Notes for the whole trip — plan, packing list, addresses" />
+
+      {!nb.archived && (
+        <button onClick={() => onWrite(nb.id, { date: nb.from > todayISO() ? nb.from : todayISO() })}
+          className="dl-accent flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium">
+          <Plus size={16} /> Write an entry
+        </button>
+      )}
+
+      <OpenAllBar count={allKeys.length} noun="days and notes" allOpen={allOpen}
+        onAll={() => rows.set(allKeys)} onNone={() => rows.set([])} />
+
+      {days.map((d, i) => {
+        const daySessions = ss.filter((s) => s.date === d);
+        const dayEntries = list.filter((e) => e.date === d);
+        const isOpen = rows.has(`day:${d}`);
+        const km = tripTotals(daySessions).km;
+        const summary = [
+          daySessions.length ? `${daySessions.length} session${daySessions.length === 1 ? "" : "s"}${km ? ` · ${round(km, 1)} km` : ""}` : "",
+          dayEntries.length ? `${dayEntries.length} note${dayEntries.length === 1 ? "" : "s"}` : "",
+        ].filter(Boolean).join(" · ") || "nothing logged";
+        return (
+          <div key={d} className={card}>
+            <div className={`flex items-center gap-2 ${isOpen ? "px-4 pt-4" : "px-4 py-3"}`}>
+              <button onClick={() => rows.flip(`day:${d}`)} aria-expanded={isOpen} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                <span className="shrink-0 text-sm font-medium" style={{ color }}>Day {i + 1}</span>
+                <span className="shrink-0 text-xs dl-faint">{fmtDay(d)}</span>
+                {!isOpen && <span className="min-w-0 truncate text-xs dl-faint">· {summary}</span>}
+                <span className="flex-1" />
+                {isOpen ? <ChevronDown size={16} className="shrink-0 dl-faint" /> : <ChevronRight size={16} className="shrink-0 dl-faint" />}
+              </button>
+              {isOpen && !nb.archived && (
+                <button onClick={() => onWrite(nb.id, { date: d })}
+                  className="flex shrink-0 items-center gap-1 text-xs dl-muted"><Plus size={12} /> Write</button>
+              )}
+            </div>
+            {isOpen && (
+              <div className="px-4 pb-4">
+                {daySessions.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {daySessions.map((s) => <SessionChip key={s.id} s={s} types={data.types} onClick={onJump} />)}
+                  </div>
+                )}
+                {daySessions.length === 0 && dayEntries.length === 0 && <div className="mt-1 text-xs dl-faint">Rest day, or nothing logged.</div>}
+                {dayEntries.map((e) => (
+                  <div key={e.id} className="mt-3 border-t dl-line pt-3">
+                    <EntryInline e={e} nb={nb} data={data} focused={focus === e.id} onEdit={onEditEntry} onToggle={onToggle} onJump={onJump} daySessions={daySessions} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {outside.length > 0 && (
+        <>
+          <div className="px-1 pt-2 text-xs uppercase tracking-wide dl-faint">Before and after</div>
+          {outside.map((e) => <EntryCard key={e.id} e={e} nb={nb} data={data} focused={focus === e.id} open={rows.has(e.id)} onOpen={rows.flip}
+            onEdit={onEditEntry} onToggle={onToggle} onJump={onJump} />)}
+        </>
+      )}
+    </>
+  );
+}
+
+// an entry inside a trip day: the day already says the date and shows its sessions
+function EntryInline({ e, nb, data, focused, onEdit, onToggle, onJump, daySessions }) {
+  const ref = useRef(null);
+  useEffect(() => { if (focused && ref.current) ref.current.scrollIntoView({ behavior: "smooth", block: "center" }); }, [focused]);
+  const shown = new Set(daySessions.map((s) => s.id));
+  const extra = (e.sessionIds || []).filter((id) => !shown.has(id)).map((id) => data.sessions.find((s) => s.id === id)).filter(Boolean);
+  return (
+    <div ref={ref} className="rounded-lg"
+      style={focused ? { outline: `2px solid ${shade(nb.color)}`, outlineOffset: 4 } : undefined}>
+      <div className="mb-1 flex items-start justify-between gap-2">
+        {e.title ? <div className="text-sm font-medium">{e.title}</div> : <span />}
+        <button onClick={() => onEdit(e)} aria-label="Edit this note" className="shrink-0 dl-faint"><Pencil size={14} /></button>
+      </div>
+      {e.body ? <Prose text={e.body} clamp={8} color={shade(nb.color)} onToggle={(i) => onToggle(e, i)} />
+        : !(e.attachments || []).length && <div className="text-sm dl-faint">(empty entry)</div>}
+      <AttachmentStrip items={e.attachments} />
+      {extra.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{extra.map((s) => <SessionChip key={s.id} s={s} types={data.types} onClick={onJump} />)}</div>}
+    </div>
+  );
+}
+
+/* The values a journal follows. The first one leads: it names the chart,
+   colours the list and draws the sparkline. Removing a measure keeps what
+   was written under it in the entries; it just stops being shown. */
+function MeasureList({ data, nb, onChange }) {
+  const ms = measuresOf(nb);
+  const setM = (i, patch) => onChange(ms.map((m, j) => (j === i ? { ...m, ...patch } : m)));
+  return (
+    <div className="space-y-2">
+      {ms.map((m, i) => (
+        <div key={m.id} className="flex items-center gap-2">
+          <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: measureColor(nb, i) }} />
+          <input className={`${smallInput} min-w-0 flex-1`} value={m.name} placeholder="Pain, stiffness…"
+            onChange={(e) => setM(i, { name: e.target.value })} />
+          <Chip small on={m.lowerBetter !== false} onClick={() => setM(i, { lowerBetter: true })}>lower</Chip>
+          <Chip small on={m.lowerBetter === false} onClick={() => setM(i, { lowerBetter: false })}>higher</Chip>
+          {ms.length > 1 && (
+            <button onClick={() => onChange(ms.filter((_, j) => j !== i))} aria-label={`Remove ${m.name}`} className="dl-faint"><X size={16} /></button>
+          )}
+        </div>
+      ))}
+      <div className="flex items-center justify-between">
+        <span className="text-xs dl-faint">"lower" or "higher" is better</span>
+        {ms.length < 4 && (
+          <button onClick={() => onChange([...ms, { id: uid(), name: "", lowerBetter: true }])} className="flex items-center gap-1 text-xs dl-muted">
+            <Plus size={12} /> Add a value
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* What the tracked value is drawn against, and over which activities. */
+function TrackAgainst({ data, track, onChange }) {
+  const against = againstOf(track);
+  const acts = track.acts || [];
+  const options = metricsFor(data.types, data.settings).filter((m) => m.kind === "sum");
+  const roots = data.types.filter((t) => !t.muted);
+  const has = (root) => acts.some((k) => k === root.id || k.startsWith(root.id + "/"));
+  const setActs = (next) => onChange({ ...track, acts: next });
+
+  const flipRoot = (t) => setActs(has(t) ? acts.filter((k) => !(k === t.id || k.startsWith(t.id + "/"))) : [...acts, t.id]);
+  const flipChild = (t, c) => {
+    const key = `${t.id}/${c.id}`;
+    let next = acts.filter((k) => k !== t.id);           // choosing a subtype narrows the whole activity
+    next = next.includes(key) ? next.filter((k) => k !== key) : [...next, key];
+    if (!next.some((k) => k.startsWith(t.id + "/"))) next = [...next, t.id]; // none left: back to all of it
+    setActs(next);
+  };
+
+  return (
+    <div className="space-y-3 border-t dl-line pt-3">
+      <div>
+        <div className="mb-1.5 text-sm dl-muted">Compare with</div>
+        <div className="flex flex-wrap gap-2">
+          <Chip small on={!against} onClick={() => onChange({ ...track, against: null })}>Nothing</Chip>
+          {options.map((m) => (
+            <Chip key={m.id} small on={against === m.id} onClick={() => onChange({ ...track, against: m.id })}>
+              {FIELDS[m.id] ? FIELDS[m.id].label : m.label}
+            </Chip>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="mb-1.5 text-sm dl-muted">Also draw from your sessions</div>
+        <div className="flex flex-wrap gap-2">
+          <Chip small on={!track.fromSessions} onClick={() => onChange({ ...track, fromSessions: null })}>Nothing</Chip>
+          {allSliderKeys(data.types).map((x) => (
+            <Chip key={x.key} small on={track.fromSessions === x.key} onClick={() => onChange({ ...track, fromSessions: x.key })}>{x.label}</Chip>
+          ))}
+        </div>
+        <div className="mt-1 text-xs dl-faint">A dashed line of what you already rate on each session, so it needn't be typed twice.</div>
+      </div>
+      {(against || track.fromSessions) && (
+        <div>
+          <div className="mb-1.5 text-sm dl-muted">Counting only</div>
+          <div className="flex flex-wrap gap-2">
+            {roots.map((t) => (
+              <Chip key={t.id} small on={has(t)} color={shade(t.color)} onClick={() => flipRoot(t)}>{t.name}</Chip>
+            ))}
+          </div>
+          {roots.filter((t) => has(t) && (t.children || []).length).map((t) => (
+            <div key={t.id} className="mt-2 flex flex-wrap items-center gap-2 pl-2">
+              <span className="text-xs" style={{ color: shade(t.color) }}>{t.name} ›</span>
+              <Chip small on={acts.includes(t.id)} color={shade(t.color)} onClick={() => setActs([...acts.filter((k) => !k.startsWith(t.id + "/") && k !== t.id), t.id])}>all</Chip>
+              {t.children.map((c) => (
+                <Chip key={c.id} small on={acts.includes(`${t.id}/${c.id}`)} color={shade(t.color)} onClick={() => flipChild(t, c)}>{c.name}</Chip>
+              ))}
+            </div>
+          ))}
+          <div className="mt-2 text-xs dl-faint">
+            {acts.length ? `Only ${actsLabel(data.types, acts)} count.` : "None picked: every activity counts."}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- making and changing a notebook ---------- */
+
+function NotebookSheet({ data, initial, onSave, onClose, onDelete }) {
+  const isNew = !initial || initial._new;
+  const colors = paletteOf(data.settings); // the default comes from the theme's own set
+  const [n, setN] = useState(() => {
+    const { _new, ...rest } = initial || {};
+    return {
+      id: uid(), kind: "journal", name: "", color: colors[(data.notebooks || []).length * 3 % colors.length],
+      pinned: false, archived: false, createdAt: nowISO(), ...rest,
+    };
+  });
+  const [confirm, setConfirm] = useState(false);
+  const set = (patch) => setN((x) => ({ ...x, ...patch }));
+  const count = entriesOf(data, n.id).length;
+  const ok = n.name.trim() && (n.kind !== "trip" || (n.from && n.to && n.to >= n.from));
+
+  return (
+    <div className="dl-root dl-bg dl-text fixed inset-0 z-50 overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-4 pb-10">
+        <div className="dl-bg sticky top-0 z-10 flex items-center justify-between border-b dl-line py-4">
+          <button onClick={onClose} className="dl-muted">Cancel</button>
+          <span className="font-medium">{isNew ? "New notebook" : "Notebook"}</span>
+          <button disabled={!ok} onClick={() => onSave({ ...n, name: n.name.trim() })}
+            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${ok ? "dl-accent" : "dl-faint"}`}>
+            <Save size={16} /> Save
+          </button>
+        </div>
+
+        <div className="space-y-4 pt-4">
+          <div className={`${card} p-4`}>
+            <Field label="Name">
+              <input autoFocus={isNew} className={inputCls} placeholder="Achilles rehab, Madeira, 2026 goals…" value={n.name} onChange={(e) => set({ name: e.target.value })} />
+            </Field>
+          </div>
+
+          {isNew && (
+            <div className={`${card} space-y-2 p-4`}>
+              <div className="text-sm dl-muted">Kind</div>
+              {Object.entries(NB_KINDS).map(([k, K]) => {
+                const Icon = K.icon;
+                const on = n.kind === k;
+                return (
+                  <button key={k} onClick={() => set({ kind: k })}
+                    className="flex w-full items-start gap-3 rounded-xl border p-3 text-left"
+                    style={{ borderColor: on ? shade(n.color) : "var(--line)", background: on ? shade(n.color) + "1A" : "transparent" }}>
+                    <Icon size={18} className="mt-0.5 shrink-0" style={{ color: on ? shade(n.color) : "var(--muted)" }} />
+                    <span>
+                      <span className="block text-sm">{K.label}</span>
+                      <span className="block text-xs dl-faint">{K.hint}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {n.kind === "trip" && (
+            <div className={`${card} grid grid-cols-2 gap-3 p-4`}>
+              <Field label="From"><input type="date" className={inputCls} value={n.from || ""} onChange={(e) => set({ from: e.target.value, to: n.to && n.to >= e.target.value ? n.to : e.target.value })} /></Field>
+              <Field label="To"><input type="date" className={inputCls} value={n.to || ""} min={n.from || undefined} onChange={(e) => set({ to: e.target.value })} /></Field>
+            </div>
+          )}
+
+          {n.kind === "journal" && (
+            <div className={`${card} space-y-3 p-4`}>
+              <label className="flex items-center justify-between gap-3">
+                <span>
+                  <span className="block text-sm">Track values with each entry</span>
+                  <span className="block text-xs dl-faint">0–10 sliders on every entry, charted over time — and, if you like, against what you did in the activities they concern.</span>
+                </span>
+                <input type="checkbox" className="h-5 w-5 shrink-0" checked={!!n.track}
+                  onChange={(e) => set({ track: e.target.checked ? { name: "Pain", lowerBetter: true, measures: [{ id: "main", name: "Pain", lowerBetter: true }], against: "load", acts: [], fromSessions: null } : null })} />
+              </label>
+              {n.track && <MeasureList data={data} nb={n} onChange={(ms) => set({ track: { ...n.track, measures: ms, name: ms[0].name, lowerBetter: ms[0].lowerBetter } })} />}
+              {n.track && <TrackAgainst data={data} track={n.track} onChange={(t) => set({ track: t })} />}
+            </div>
+          )}
+
+          {/* the same 14 as activities, and like them they follow the theme:
+              the notebook keeps its slot, the theme decides the shade */}
+          <div className={`${card} p-4`}>
+            <div className="mb-2 text-sm dl-muted">Colour</div>
+            <div className="flex flex-wrap gap-2">
+              {colors.map((c) => (
+                <button key={c} onClick={() => set({ color: c })} aria-label={c}
+                  className="h-8 w-8 rounded-full" style={{ background: c, outline: shade(n.color) === c ? "2px solid var(--text)" : "none", outlineOffset: 2 }} />
+              ))}
+            </div>
+          </div>
+
+          {!isNew && (
+            <div className={`${card} space-y-2 p-4`}>
+              <button onClick={() => set({ archived: !n.archived })} className="flex w-full items-center gap-2 text-sm dl-muted">
+                <Archive size={16} /> {n.archived ? "Bring back from the archive" : "Archive — keep it, but out of the way"}
+              </button>
+              <button onClick={() => setConfirm(true)} className="flex w-full items-center gap-2 pt-2 text-sm" style={{ color: "#F2546B" }}>
+                <Trash2 size={16} /> Delete this notebook
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,0.6)" }}>
+          <div className={`${card} w-full max-w-sm p-5`}>
+            <div className="font-medium">Delete “{n.name}”?</div>
+            <p className="mt-2 text-sm dl-muted">
+              {count ? `Its ${count} entr${count === 1 ? "y goes" : "ies go"} with it, on every device. ` : ""}Your sessions are not touched. Archiving keeps everything instead.
+            </p>
+            <div className="mt-5 flex gap-2">
+              <button onClick={() => setConfirm(false)} className="flex-1 rounded-xl border dl-line py-3 text-sm">Cancel</button>
+              <button onClick={() => onDelete(n.id)} className="flex-1 rounded-xl py-3 text-sm font-medium" style={{ background: "#F2546B", color: "#fff" }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- writing an entry ---------- */
+
+function EntrySheet({ data, initial, isNew, onSave, onDelete, onClose }) {
+  const [e, setE] = useState(initial);
+  const [wide, setWide] = useState(false);
+  // linking is always optional: the list stays closed unless something is already linked
+  const [linking, setLinking] = useState((initial.sessionIds || []).length > 0);
+  const [confirm, setConfirm] = useState(false);
+  const set = (patch) => setE((x) => ({ ...x, ...patch }));
+  const nb = (data.notebooks || []).find((n) => n.id === e.notebookId);
+  const choices = (data.notebooks || []).filter((n) => writable(n) || n.id === e.notebookId);
+  const color = shade(nb?.color) || "var(--text)";
+  const linked = new Set(e.sessionIds || []);
+
+  // sessions near the entry's date, nearest first; linked ones always stay listed
+  const span = wide ? 21 : 3;
+  const near = liveSessions(data)
+    .filter((s) => linked.has(s.id) || Math.abs(dayDiff(s.date, e.date)) <= span)
+    .sort((a, b) => Math.abs(dayDiff(a.date, e.date)) - Math.abs(dayDiff(b.date, e.date)) || (a.date < b.date ? 1 : -1));
+
+  const flip = (id) => set({ sessionIds: linked.has(id) ? [...linked].filter((x) => x !== id) : [...linked, id] });
+  const ok = !!nb && (e.body?.trim() || e.title?.trim() || hasVals(e, nb) || linked.size || (e.attachments || []).length);
+  const tools = useAttachmentTools(e.attachments, (atts) => set({ attachments: atts }));
+
+  return (
+    <div className="dl-root dl-bg dl-text fixed inset-0 z-50 overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-4 pb-10">
+        <div className="dl-bg sticky top-0 z-10 flex items-center justify-between border-b dl-line py-4">
+          <button onClick={onClose} className="dl-muted">Cancel</button>
+          <span className="font-medium">{isNew ? "New entry" : "Edit entry"}</span>
+          <button disabled={!ok} onClick={() => onSave(e)}
+            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${ok ? "dl-accent" : "dl-faint"}`}>
+            <Save size={16} /> Save
+          </button>
+        </div>
+
+        <div className="space-y-4 pt-4">
+          {choices.length === 0 && (
+            <div className={`${card} p-5 text-sm dl-muted`}>You have no journal or trip to write in yet. Make one in the Notebooks tab first.</div>
+          )}
+          {choices.length > 0 && (
+            <div className={`${card} p-4`}>
+              <div className="mb-2 text-sm dl-muted">In</div>
+              <div className="flex flex-wrap gap-2">
+                {choices.map((n) => (
+                  <Chip key={n.id} small on={n.id === e.notebookId} color={shade(n.color)} onClick={() => set({ notebookId: n.id })}>{n.name}</Chip>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className={`${card} space-y-3 p-4`}>
+            <Field label="Date">
+              <input type="date" className={inputCls} value={e.date} onChange={(ev) => set({ date: ev.target.value })} />
+            </Field>
+            <Field label="Title (optional)">
+              <input className={inputCls} placeholder="First run without the tape…" value={e.title || ""} onChange={(ev) => set({ title: ev.target.value })} />
+            </Field>
+          </div>
+
+          {nb?.track && (
+            <div className={`${card} px-4 py-2`}>
+              {measuresOf(nb).map((m, i) => (
+                <Slider key={m.id} label={m.name} hint={m.lowerBetter !== false ? "none → worst" : "worst → best"}
+                  color={measureColor(nb, i)} value={valOf(e, m)}
+                  // "main" also keeps the old field, so an older build still reads it
+                  onChange={(v) => set({ vals: { ...(e.vals || {}), [m.id]: v }, ...(m.id === "main" ? { value: v } : {}) })}
+                  showValue={data.settings?.sliderValues !== false} showHint />
+              ))}
+            </div>
+          )}
+
+          <div className={`${card} p-4`}>
+            <WriteBox value={e.body || ""} onChange={(v) => set({ body: v })}
+              placeholder="What happened, what you felt, what you'll change…"
+              onPhoto={tools.addPhotos} onSketch={tools.newSketch} />
+            <Attachments items={e.attachments} onOpen={tools.open} onRemove={tools.remove} />
+            {tools.ui}
+          </div>
+
+          {!linking ? (
+            <button onClick={() => setLinking(true)}
+              className="flex w-full items-center gap-2 rounded-2xl border border-dashed dl-line px-4 py-3 text-left text-sm dl-faint">
+              <LinkIcon size={16} className="shrink-0" /> Link to a session (optional)
+            </button>
+          ) : (
+          <div className={`${card} p-4`}>
+            <div className="mb-1 flex items-baseline justify-between">
+              <span className="text-sm dl-muted">Linked sessions <span className="dl-faint">· optional</span></span>
+              <span className="text-xs dl-faint">{linked.size ? `${linked.size} linked` : `within ${span} days`}</span>
+            </div>
+            {near.length === 0 && <div className="py-2 text-sm dl-faint">No sessions within {span} days of this date.</div>}
+            <div className="divide-y dl-line">
+              {near.map((s) => {
+                const on = linked.has(s.id);
+                return (
+                  <button key={s.id} onClick={() => flip(s.id)} className="flex w-full items-center gap-3 py-2.5 text-left" style={{ borderColor: "var(--line)" }}>
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border"
+                      style={{ borderColor: on ? color : "var(--faint)", background: on ? color : "transparent" }}>
+                      {on && <Check size={13} color="var(--bg)" strokeWidth={3} />}
+                    </span>
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: colorFor(data.types, s) }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{s.title || labelFor(data.types, s)}</span>
+                      <span className="block text-xs tabular-nums dl-faint">{fmtDay(s.date)}{brief(s) ? ` · ${brief(s)}` : ""}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {!wide && <button onClick={() => setWide(true)} className="mt-2 text-xs underline dl-faint">Look three weeks either side</button>}
+            {linked.size > 0 && <button onClick={() => set({ sessionIds: [] })} className="ml-4 mt-2 text-xs underline dl-faint">Unlink all</button>}
+          </div>
+          )}
+
+          {!isNew && (
+            <button onClick={() => setConfirm(true)} className="flex items-center gap-2 px-1 text-sm" style={{ color: "#F2546B" }}>
+              <Trash2 size={16} /> Delete this entry
+            </button>
+          )}
+        </div>
+      </div>
+
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,0.6)" }}>
+          <div className={`${card} w-full max-w-sm p-5`}>
+            <div className="font-medium">Delete this entry?</div>
+            <p className="mt-2 text-sm dl-muted">{fmtDay(e.date)}{e.title ? ` · ${e.title}` : ""}</p>
+            <div className="mt-5 flex gap-2">
+              <button onClick={() => setConfirm(false)} className="flex-1 rounded-xl border dl-line py-3 text-sm">Cancel</button>
+              <button onClick={() => onDelete(e.id)} className="flex-1 rounded-xl py-3 text-sm font-medium" style={{ background: "#F2546B", color: "#fff" }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- the other direction: a session's notes, on the calendar ---------- */
+
+function SessionNotes({ data, s, onOpenEntry, onWrite }) {
+  const notebooks = data.notebooks || [];
+  const linked = (data.entries || []).filter((e) => (e.sessionIds || []).includes(s.id));
+  const trips = notebooks.filter((n) => n.kind === "trip" && n.from && n.to && s.date >= n.from && s.date <= n.to);
+  const canWrite = notebooks.some(writable);
+  if (!linked.length && !trips.length && !canWrite) return null;
+
+  return (
+    <div className="mt-3 border-t dl-line pt-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs dl-faint">In your notebooks</span>
+        {canWrite && (
+          <button onClick={() => onWrite(s)} className="flex items-center gap-1 text-xs dl-muted"><NotebookPen size={12} /> Write about it</button>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {linked.map((e) => {
+          const nb = notebooks.find((n) => n.id === e.notebookId);
+          if (!nb) return null;
+          const line = e.title || (e.body || "").split("\n").find((l) => l.trim()) || "";
+          return (
+            <button key={e.id} onClick={() => onOpenEntry(e)} className="flex w-full items-center gap-2 rounded-lg border dl-line px-2.5 py-2 text-left">
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: shade(nb.color) }} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs dl-faint">{nb.name}</span>
+                <span className="block truncate text-sm dl-muted">{line.replace(/^[#\-*\s[\]x]+/, "")}</span>
+              </span>
+              <ValueChips nb={nb} e={e} compact />
+            </button>
+          );
+        })}
+        {trips.filter((n) => !linked.some((e) => e.notebookId === n.id)).map((n) => (
+          <button key={n.id} onClick={() => onOpenEntry({ notebookId: n.id })} className="flex w-full items-center gap-2 rounded-lg border dl-line px-2.5 py-2 text-left">
+            <Mountain size={14} style={{ color: shade(n.color) }} className="shrink-0" />
+            <span className="flex-1 truncate text-sm dl-muted">Part of {n.name}</span>
+            <ChevronRight size={14} className="dl-faint" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- writing: a textarea that knows about lists ---------- */
+
+const LIST_PREFIX = /^(\s*)([-*] \[[ xX]\] |[-*] |(\d+)[.)] |#{1,3} )/;
+
+// what to put at the start of the next line when a list line is ended
+function nextPrefix(line) {
+  const m = line.match(/^(\s*)([-*] \[[ xX]\] |[-*] |(\d+)([.)]) )/);
+  if (!m) return null;
+  if (m[3]) return `${m[1]}${Number(m[3]) + 1}${m[4]} `;
+  if (/\[[ xX]\]/.test(m[2])) return `${m[1]}- [ ] `;
+  return `${m[1]}- `;
+}
+
+/* The toolbar sits under the text and sticks to the bottom of the
+   screen, which on a phone is just above the keyboard. Its buttons
+   swallow pointerdown so the textarea keeps focus and the keyboard
+   stays up. Enter on a list line starts the next item; Enter on an
+   empty item ends the list — handled on the change rather than on the
+   key, because Android keyboards don't reliably report Enter. */
+function WriteBox({ value, onChange, rows = 9, placeholder, onBlur, autoFocus, onPhoto, onSketch }) {
+  const ref = useRef(null);
+  const fileRef = useRef(null);
+  const text = value || "";
+
+  // Where the caret should go once the new text is on screen. Applied in a
+  // layout effect — before the next keystroke can land — rather than a
+  // frame later, when fast typing would already have gone to the old spot.
+  const caret = useRef(null);
+  useLayoutEffect(() => {
+    const want = caret.current; if (!want) return;
+    caret.current = null;
+    const el = ref.current; if (!el) return;
+    if (document.activeElement !== el) el.focus();
+    try { el.setSelectionRange(want[0], want[1]); } catch (e) { /* ignore */ }
+  });
+  const place = (a, b = a) => { caret.current = [a, b]; };
+
+  const change = (next) => {
+    const el = ref.current;
+    const pos = el ? el.selectionStart : next.length;
+    // exactly one newline typed?
+    if (next.length === text.length + 1 && next[pos - 1] === "\n" && next.slice(0, pos - 1) + next.slice(pos) === text) {
+      const lineStart = text.lastIndexOf("\n", pos - 2) + 1;
+      const line = text.slice(lineStart, pos - 1);
+      const pre = nextPrefix(line);
+      if (pre) {
+        const bare = line.replace(LIST_PREFIX, "").trim();
+        if (!bare) {
+          // an empty item: end the list instead of adding another
+          const out = text.slice(0, lineStart) + text.slice(pos - 1);
+          place(lineStart); onChange(out);
+          return;
+        }
+        const out = next.slice(0, pos) + pre + next.slice(pos);
+        place(pos + pre.length); onChange(out);
+        return;
+      }
+    }
+    onChange(next);
+  };
+
+  // put a prefix on every line the selection touches, or take it off if they all have it
+  const toggle = (kind) => {
+    const el = ref.current;
+    const a = el ? el.selectionStart : text.length, b = el ? el.selectionEnd : text.length;
+    const start = text.lastIndexOf("\n", a - 1) + 1;
+    let end = text.indexOf("\n", b); if (end < 0) end = text.length;
+    const lines = text.slice(start, end).split("\n");
+    const want = { box: "- [ ] ", bullet: "- ", heading: "# " }[kind];
+    const has = (l) => kind === "box" ? CHECK.test(l)
+      : kind === "bullet" ? /^\s*[-*] (?!\[[ xX]\] )/.test(l)
+      : /^#{1,3} /.test(l);
+    const off = lines.every(has);
+    const seg = lines.map((l) => {
+      const indent = l.match(/^\s*/)[0];
+      const bare = l.replace(LIST_PREFIX, "").replace(/^\s*/, "");
+      return off ? indent + bare : indent + want + bare;
+    }).join("\n");
+    const out = text.slice(0, start) + seg + text.slice(end);
+    onChange(out);
+    if (lines.length === 1 && a === b) place(Math.max(start, a + (seg.length - (end - start))));
+    else place(start, start + seg.length);
+  };
+
+  const bold = () => {
+    const el = ref.current;
+    const a = el ? el.selectionStart : text.length, b = el ? el.selectionEnd : text.length;
+    const out = `${text.slice(0, a)}**${text.slice(a, b)}**${text.slice(b)}`;
+    onChange(out);
+    place(a + 2, b + 2);
+  };
+
+  const Btn = ({ onClick, label, children }) => (
+    <button type="button" aria-label={label} title={label}
+      onPointerDown={(e) => e.preventDefault()} onClick={onClick}
+      className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-2 text-xs dl-muted" style={{ minHeight: 36 }}>
+      {children}
+    </button>
+  );
+
+  return (
+    <div>
+      <textarea ref={ref} rows={rows} autoFocus={autoFocus}
+        className={`${inputCls} leading-relaxed`} style={{ fontVariantNumeric: "normal" }}
+        placeholder={placeholder} value={text}
+        onChange={(e) => change(e.target.value)} onBlur={onBlur} />
+      <div className="dl-surface sticky bottom-0 z-10 -mx-1 mt-1 flex items-center gap-0 overflow-x-auto whitespace-nowrap border-t dl-line px-0.5 pt-1">
+        <Btn onClick={() => toggle("box")} label="Tick box"><SquareCheck size={16} /> Box</Btn>
+        <Btn onClick={() => toggle("bullet")} label="Bullet list"><List size={16} /> List</Btn>
+        <Btn onClick={() => toggle("heading")} label="Heading"><Heading size={16} /></Btn>
+        <Btn onClick={bold} label="Bold"><Bold size={16} /></Btn>
+        {(onPhoto || onSketch) && <span className="mx-0.5 h-5 w-px shrink-0" style={{ background: "var(--line)" }} />}
+        {onPhoto && (
+          <>
+            <Btn onClick={() => fileRef.current && fileRef.current.click()} label="Add a photo"><ImagePlus size={16} /> Photo</Btn>
+            <input ref={fileRef} type="file" accept="image/*" multiple hidden
+              onChange={(e) => { const fs = [...(e.target.files || [])]; e.target.value = ""; if (fs.length) onPhoto(fs); }} />
+          </>
+        )}
+        {onSketch && <Btn onClick={onSketch} label="Draw"><PenTool size={16} /> Draw</Btn>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- sketches: stored as strokes, not pixels ---------- */
+
+/* A drawing is a list of strokes in a fixed 1000 × 750 space. Stored
+   that way it is a few kilobytes instead of a few hundred, it stays
+   sharp at any size, and strokes drawn in "ink" follow the theme — a
+   sketch made on the dark theme is still readable on the light one. */
+const SK_W = 1000, SK_H = 750;
+const SK_WIDTHS = [4, 9, 18];
+
+function strokePath(p) {
+  if (!p || p.length < 2) return "";
+  if (p.length < 6) return `M${p[0]},${p[1]} L${p[p.length - 2] + 0.1},${p[p.length - 1]}`;
+  let d = `M${p[0]},${p[1]}`;
+  for (let i = 2; i < p.length - 2; i += 2) {
+    const mx = (p[i] + p[i + 2]) / 2, my = (p[i + 1] + p[i + 3]) / 2;
+    d += ` Q${p[i]},${p[i + 1]} ${mx},${my}`;
+  }
+  return d + ` L${p[p.length - 2]},${p[p.length - 1]}`;
+}
+
+function SketchView({ strokes, className = "", style }) {
+  return (
+    <svg viewBox={`0 0 ${SK_W} ${SK_H}`} className={className} style={style} aria-label="Sketch" role="img">
+      {(strokes || []).map((s, i) => (
+        <path key={i} d={strokePath(s.p)} fill="none" stroke={s.c === "ink" ? "var(--text)" : s.c}
+          strokeWidth={s.w} strokeLinecap="round" strokeLinejoin="round" />
+      ))}
+    </svg>
+  );
+}
+
+function SketchSheet({ initial, onSave, onClose, onDelete }) {
+  const [strokes, setStrokes] = useState(() => (initial?.strokes || []).map((s) => ({ ...s, p: [...s.p] })));
+  const [color, setColor] = useState("ink");
+  const [width, setWidth] = useState(1);
+  const [erase, setErase] = useState(false);
+  const live = useRef(null);
+  const svg = useRef(null);
+  const [, bump] = useState(0);
+  const inks = ["ink", "#FF5C5C", "#F2A23C", "#F2C230", "#4BE37A", "#3FA9E0", "#B57BE0"];
+
+  const at = (e) => {
+    const r = svg.current.getBoundingClientRect();
+    return [Math.round(((e.clientX - r.left) / r.width) * SK_W), Math.round(((e.clientY - r.top) / r.height) * SK_H)];
+  };
+
+  // the stroke eraser removes whole strokes it passes over — easier with a finger than rubbing out pixels
+  const rub = ([x, y]) => setStrokes((ss) => ss.filter((s) => {
+    for (let i = 0; i < s.p.length; i += 2) if (Math.hypot(s.p[i] - x, s.p[i + 1] - y) < 18 + s.w / 2) return false;
+    return true;
+  }));
+
+  const down = (e) => {
+    e.preventDefault();
+    try { svg.current.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    const pt = at(e);
+    if (erase) { live.current = { erase: true }; rub(pt); return; }
+    live.current = { c: color, w: SK_WIDTHS[width], p: [...pt] };
+    bump((n) => n + 1);
+  };
+  const move = (e) => {
+    const l = live.current; if (!l) return;
+    const pt = at(e);
+    if (l.erase) { rub(pt); return; }
+    const n = l.p.length;
+    if (Math.hypot(l.p[n - 2] - pt[0], l.p[n - 1] - pt[1]) < 4) return; // thin out: a finger reports far more points than a line needs
+    l.p.push(pt[0], pt[1]);
+    bump((k) => k + 1);
+  };
+  const up = () => {
+    const l = live.current; live.current = null;
+    if (l && !l.erase) setStrokes((ss) => [...ss, l]);
+  };
+
+  const shown = live.current && !live.current.erase ? [...strokes, live.current] : strokes;
+
+  return (
+    <div className="dl-root dl-bg dl-text fixed inset-0 z-[60] overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-4 pb-10">
+        <div className="dl-bg sticky top-0 z-10 flex items-center justify-between border-b dl-line py-4">
+          <button onClick={onClose} className="dl-muted">Cancel</button>
+          <span className="font-medium">{initial ? "Sketch" : "New sketch"}</span>
+          <button disabled={!strokes.length} onClick={() => onSave({ id: initial?.id || uid(), kind: "sketch", strokes })}
+            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${strokes.length ? "dl-accent" : "dl-faint"}`}>
+            <Check size={16} /> Done
+          </button>
+        </div>
+
+        <div className="pt-4">
+          <svg ref={svg} viewBox={`0 0 ${SK_W} ${SK_H}`} className="block w-full rounded-2xl border dl-line dl-surface"
+            style={{ touchAction: "none", aspectRatio: `${SK_W} / ${SK_H}`, cursor: erase ? "cell" : "crosshair" }}
+            onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onPointerLeave={up}>
+            {shown.map((s, i) => (
+              <path key={i} d={strokePath(s.p)} fill="none" stroke={s.c === "ink" ? "var(--text)" : s.c}
+                strokeWidth={s.w} strokeLinecap="round" strokeLinejoin="round" />
+            ))}
+          </svg>
+
+          <div className={`${card} mt-3 space-y-3 p-3`}>
+            <div className="flex flex-wrap items-center gap-2">
+              {inks.map((c) => (
+                <button key={c} onClick={() => { setColor(c); setErase(false); }} aria-label={c === "ink" ? "Ink" : c}
+                  className="h-8 w-8 rounded-full border dl-line"
+                  style={{ background: c === "ink" ? "var(--text)" : c, outline: !erase && color === c ? "2px solid var(--text)" : "none", outlineOffset: 2 }} />
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {SK_WIDTHS.map((w, i) => (
+                <button key={w} onClick={() => { setWidth(i); setErase(false); }} aria-label={["Fine", "Medium", "Thick"][i]}
+                  className="flex h-9 w-12 items-center justify-center rounded-lg border"
+                  style={{ borderColor: !erase && width === i ? "var(--text)" : "var(--line)" }}>
+                  <span className="rounded-full" style={{ width: 24, height: Math.max(2, w / 2.2), background: color === "ink" ? "var(--text)" : color }} />
+                </button>
+              ))}
+              <span className="flex-1" />
+              <button onClick={() => setErase(!erase)} aria-label="Eraser"
+                className="flex h-9 items-center gap-1 rounded-lg border px-2.5 text-xs"
+                style={{ borderColor: erase ? "var(--text)" : "var(--line)", color: erase ? "var(--text)" : "var(--muted)" }}>
+                <Eraser size={16} /> Erase
+              </button>
+              <button onClick={() => setStrokes((ss) => ss.slice(0, -1))} disabled={!strokes.length} aria-label="Undo"
+                className="flex h-9 items-center rounded-lg border dl-line px-2.5 dl-muted"><Undo2 size={16} /></button>
+            </div>
+          </div>
+
+          {onDelete && (
+            <button onClick={onDelete} className="mt-4 flex items-center gap-2 px-1 text-sm" style={{ color: "#F2546B" }}>
+              <Trash2 size={16} /> Remove this sketch
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- photos and sketches under the text ---------- */
+
+function usePhoto(id) {
+  const [url, setUrl] = useState(null);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    if (!id) return undefined;
+    let live = true;
+    photoURL(id).then((u) => { if (!live) return; if (u) setUrl(u); else setMissing(true); }).catch(() => live && setMissing(true));
+    return () => { live = false; };
+  }, [id]);
+  return { url, missing };
+}
+
+function Thumb({ a, onClick, onRemove }) {
+  const photo = usePhoto(a.kind === "photo" ? a.id : null);
+  return (
+    <div className="relative">
+      <button type="button" onClick={(e) => { e.stopPropagation(); onClick && onClick(a); }}
+        className="block w-full overflow-hidden rounded-xl border dl-line dl-field" style={{ aspectRatio: "1 / 1" }}>
+        {a.kind === "sketch"
+          ? <SketchView strokes={a.strokes} className="h-full w-full" />
+          : photo.url
+            ? <img src={photo.url} alt="" className="h-full w-full object-cover" />
+            : <span className="flex h-full w-full items-center justify-center p-2 text-center text-xs dl-faint">
+                {photo.missing ? "Photo not on this device yet" : "Loading…"}
+              </span>}
+      </button>
+      {onRemove && (
+        <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(a); }} aria-label="Remove"
+          className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full"
+          style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }}>
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Attachments({ items, onOpen, onRemove }) {
+  if (!items || !items.length) return null;
+  return (
+    <div className="mt-3 grid grid-cols-3 gap-2">
+      {items.map((a) => <Thumb key={a.id} a={a} onClick={onOpen} onRemove={onRemove} />)}
+    </div>
+  );
+}
+
+function Lightbox({ a, onClose }) {
+  const photo = usePhoto(a.kind === "photo" ? a.id : null);
+  const [orig, setOrig] = useState(null); // null | "loading" | "failed"
+  const mb = !a.bytes ? "" : a.bytes < 1048576 ? `${Math.max(1, Math.round(a.bytes / 1024))} kB` : `${round(a.bytes / 1048576, 1)} MB`;
+
+  // what the app shows is the small copy; the original is only fetched on request
+  const openOriginal = async (e) => {
+    e.stopPropagation();
+    setOrig("loading");
+    try {
+      const u = await originalURL(a);
+      if (!u) { setOrig("failed"); return; }
+      const link = document.createElement("a");
+      link.href = u; link.download = (a.original || "").split("/").pop() || "photo.jpg";
+      document.body.appendChild(link); link.click(); link.remove();
+      setOrig(null);
+    } catch (err) { setOrig("failed"); }
+  };
+
+  return (
+    // the viewer sits inside a note card, and a click must not travel on and open the note's editor
+    <div className="dl-root fixed inset-0 z-[70] flex flex-col items-center justify-center gap-3 p-3" style={{ background: "rgba(0,0,0,0.92)" }}
+      onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <button onClick={(e) => { e.stopPropagation(); onClose(); }} aria-label="Close" className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>
+        <X size={20} />
+      </button>
+      {a.kind === "sketch"
+        ? <div className="w-full max-w-2xl rounded-2xl dl-surface p-2"><SketchView strokes={a.strokes} className="block w-full" /></div>
+        : photo.url ? <img src={photo.url} alt="" className="max-h-[80%] max-w-full rounded-lg object-contain" /> : <span className="text-sm" style={{ color: "#fff" }}>Loading…</span>}
+      {a.kind === "photo" && a.original && (
+        <div className="flex items-center gap-3 text-xs" style={{ color: "rgba(255,255,255,0.7)" }} onClick={(e) => e.stopPropagation()}>
+          <span>{originalPending(a.id) ? `Original ${mb} · waiting to upload` : `Original ${mb} · kept on GitHub`}</span>
+          <button onClick={openOriginal} className="flex items-center gap-1 rounded-lg px-2.5 py-1.5" style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>
+            <Download size={14} /> {orig === "loading" ? "Fetching…" : orig === "failed" ? "Not reachable" : "Save original"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Owns the sketch sheet and the viewer for whatever it wraps, so every
+   place that shows attachments behaves the same. */
+function useAttachmentTools(items, setItems) {
+  const [sketch, setSketch] = useState(null); // {a} or {} for new
+  const [view, setView] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const list = items || [];
+
+  const addPhotos = async (files) => {
+    setBusy(true); setErr(null);
+    try {
+      const added = [];
+      for (const f of files) added.push(await addPhoto(f));
+      setItems([...list, ...added]);
+    } catch (e) {
+      setErr(e.message || "Could not add that photo.");
+    } finally { setBusy(false); }
+  };
+
+  const ui = (
+    <>
+      {busy && <div className="mt-2 text-xs dl-faint">Preparing photo…</div>}
+      {err && <div className="mt-2 text-xs" style={{ color: "#F2546B" }}>{err}</div>}
+      {sketch && (
+        <SketchSheet initial={sketch.a} onClose={() => setSketch(null)}
+          onSave={(a) => { setItems(sketch.a ? list.map((x) => (x.id === a.id ? a : x)) : [...list, a]); setSketch(null); }}
+          onDelete={sketch.a ? () => { setItems(list.filter((x) => x.id !== sketch.a.id)); setSketch(null); } : null} />
+      )}
+      {view && <Lightbox a={view} onClose={() => setView(null)} />}
+    </>
+  );
+
+  return {
+    ui,
+    addPhotos,
+    newSketch: () => setSketch({}),
+    // in an editor a sketch opens for editing; a photo opens to look at
+    open: (a) => (a.kind === "sketch" ? setSketch({ a }) : setView(a)),
+    look: (a) => setView(a),
+    remove: (a) => setItems(list.filter((x) => x.id !== a.id)),
+  };
+}
+
+// read-only attachments with their own viewer, for cards
+function AttachmentStrip({ items }) {
+  const [view, setView] = useState(null);
+  if (!items || !items.length) return null;
+  return (
+    <>
+      <Attachments items={items} onOpen={setView} />
+      {view && <Lightbox a={view} onClose={() => setView(null)} />}
+    </>
+  );
+}
+
+/* ---------- one editable document: a page, or a notebook's general notes ---------- */
+
+function DocBody({ nb, onSave, title, empty, clamp = 0, startEditing = false }) {
+  const [editing, setEditing] = useState(startEditing);
+  const [shut, setShut] = useState(false); // only notes with a title can be folded away
+  const [draft, setDraft] = useState(nb.body || "");
+  useEffect(() => { if (!editing) setDraft(nb.body || ""); }, [nb.body, editing]);
+  const commit = () => { if (draft !== (nb.body || "")) onSave({ ...nb, body: draft }); };
+  const color = shade(nb.color);
+  const tools = useAttachmentTools(nb.attachments, (atts) => onSave({ ...nb, body: draft, attachments: atts }));
+  const hasContent = (nb.body || "").trim() || (nb.attachments || []).length;
+
+  // a trip or journal without general notes shows only a quiet invitation
+  if (!hasContent && !editing && empty) {
+    return (
+      <button onClick={() => setEditing(true)} className="flex w-full items-center gap-2 rounded-2xl border border-dashed dl-line px-4 py-3 text-left text-sm dl-faint">
+        <Plus size={16} className="shrink-0" /> {empty}
+      </button>
+    );
+  }
+
+  return (
+    <div className={`${card} p-4`}>
+      <div className={`${shut ? "" : "mb-3"} flex items-center justify-between gap-3`}>
+        {title ? (
+          <button onClick={() => !editing && setShut(!shut)} aria-expanded={!shut} className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs dl-faint">
+            {shut ? <ChevronRight size={16} className="shrink-0" /> : <ChevronDown size={16} className="shrink-0" />}
+            <span className="text-sm font-medium dl-text">{title}</span>
+            {nb.body ? <span className="truncate">edited {ago(nb.updatedAt)}</span> : null}
+          </button>
+        ) : (
+          <span className="text-xs dl-faint">{nb.body ? `Edited ${ago(nb.updatedAt)}` : ""}</span>
+        )}
+        <button onClick={() => { if (editing) commit(); setShut(false); setEditing(!editing); }}
+          className={`flex shrink-0 items-center gap-1 rounded-lg px-3 py-1.5 text-sm ${editing ? "dl-accent font-medium" : "border dl-line dl-muted"}`}>
+          {editing ? <><Check size={14} /> Done</> : <><Pencil size={14} /> Edit</>}
+        </button>
+      </div>
+      {shut && !editing ? null : editing ? (
+        <>
+          <WriteBox value={draft} onChange={setDraft} onBlur={commit} rows={12} autoFocus
+            placeholder={"Write freely, or use the buttons below for tick boxes and lists."}
+            onPhoto={tools.addPhotos} onSketch={tools.newSketch} />
+          <Attachments items={nb.attachments} onOpen={tools.open} onRemove={tools.remove} />
+        </>
+      ) : (
+        <>
+          <Prose text={nb.body || ""} color={color} clamp={clamp} onToggle={(i) => onSave({ ...nb, body: toggleLine(nb.body || "", i) })} />
+          <Attachments items={nb.attachments} onOpen={tools.look} />
+        </>
+      )}
+      {tools.ui}
+    </div>
+  );
+}
+
+/* ---------- export: a notebook as one page someone else can open ---------- */
+
+/* One self-contained HTML file: text, chart, sketches and (if wanted)
+   photos all inside it, nothing fetched from anywhere. It opens in any
+   browser, prints cleanly to PDF, and can go to a physio by email or a
+   message without giving them access to DayLoad. Always light, because
+   it is meant to be read on someone else's screen or on paper. */
+
+const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const inlineHtml = (t) => esc(t)
+  .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+  .replace(/\*([^*\s][^*]*)\*/g, "<em>$1</em>");
+
+function mdToHtml(text) {
+  const out = [];
+  for (const ln of String(text || "").replace(/\s+$/, "").split("\n")) {
+    const c = ln.match(CHECK);
+    if (c) { out.push(`<div class="li${c[2] !== " " ? " done" : ""}"><span class="box">${c[2] !== " " ? "✓" : ""}</span>${inlineHtml(c[3])}</div>`); continue; }
+    const h = ln.match(/^(#{1,3}) (.*)$/);
+    if (h) { out.push(`<h4>${inlineHtml(h[2])}</h4>`); continue; }
+    const b = ln.match(/^\s*[-*] (.*)$/);
+    if (b) { out.push(`<div class="li"><span class="dot">•</span>${inlineHtml(b[1])}</div>`); continue; }
+    const n = ln.match(/^\s*(\d+)[.)] (.*)$/);
+    if (n) { out.push(`<div class="li"><span class="dot">${n[1]}.</span>${inlineHtml(n[2])}</div>`); continue; }
+    out.push(ln.trim() ? `<p>${inlineHtml(ln)}</p>` : `<div class="gap"></div>`);
+  }
+  return out.join("\n");
+}
+
+function sketchSvg(a) {
+  const paths = (a.strokes || []).map((s) =>
+    `<path d="${strokePath(s.p)}" fill="none" stroke="${s.c === "ink" ? "#1a1a1a" : s.c}" stroke-width="${s.w}" stroke-linecap="round" stroke-linejoin="round"/>`).join("");
+  return `<svg viewBox="0 0 ${SK_W} ${SK_H}" class="sketch">${paths}</svg>`;
+}
+
+async function photoData(id) {
+  const u = await photoURL(id).catch(() => null);
+  if (!u) return null;
+  const blob = await (await fetch(u)).blob();
+  return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(null); r.readAsDataURL(blob); });
+}
+
+// the same chart as the app, drawn as plain SVG so it survives printing
+function chartSvg(data, nb, entries) {
+  const T = trackSeries(data, nb, entries);
+  if (!T) return "";
+  const W = 680, H = 220, L = 28, R = 8, TOP = 10, B = 26;
+  const n = T.rows.length;
+  const x = (i) => L + (n === 1 ? 0 : (i / (n - 1)) * (W - L - R));
+  const y = (v) => TOP + (1 - v / 10) * (H - TOP - B);
+  const maxLoad = Math.max(1, ...T.rows.map((r) => r.load));
+  const bw = Math.max(1, (W - L - R) / n - 1);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img">`;
+  for (const v of [0, 5, 10]) svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#e4e4e0"/><text x="${L - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
+  if (T.met) T.rows.forEach((r, i) => {
+    if (!r.load) return;
+    const h = (r.load / maxLoad) * (H - TOP - B);
+    svg += `<rect x="${x(i) - bw / 2}" y="${H - B - h}" width="${bw}" height="${h}" fill="#c9c9c4" opacity="0.6"/>`;
+  });
+  const line = (key, color, dashed) => {
+    const pts = T.rows.map((r, i) => (r[key] === null || r[key] === undefined ? null : [x(i), y(r[key])])).filter(Boolean);
+    if (pts.length < 1) return "";
+    let s = pts.length > 1 ? `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${color}" stroke-width="${dashed ? 1.5 : 2}"${dashed ? ' stroke-dasharray="4 3"' : ""}/>` : "";
+    if (!dashed) s += pts.map((p) => `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="${color}"/>`).join("");
+    return s;
+  };
+  if (T.fromKey) svg += line("sess", "#8a8a85", true);
+  T.ms.forEach((m, i) => { svg += line(`m_${m.id}`, T.colors[i], false); });
+  const ticks = [0, Math.floor(n / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i);
+  ticks.forEach((i) => { svg += `<text x="${x(i)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${esc(T.rows[i].label)}</text>`; });
+  svg += "</svg>";
+  const legend = [
+    ...T.ms.map((m, i) => `<span><i style="background:${T.colors[i]}"></i>${esc(m.name)}</span>`),
+    T.fromKey ? `<span><i class="dash"></i>${esc(T.fromLabel)} from sessions</span>` : "",
+    T.met ? `<span><i class="bar"></i>${esc(T.metLabel.toLowerCase())} per day</span>` : "",
+  ].join("");
+  return `${svg}<div class="legend">${legend}</div>${T.met || T.fromKey ? `<div class="muted small">Counting ${esc(actsLabel(data.types, T.acts))}. Values are 0–10.</div>` : ""}`;
+}
+
+function sessionLine(data, s) {
+  const bits = [brief(s)];
+  const ni = s.sliders?.injury;
+  if (ni !== null && ni !== undefined) bits.push(`niggle ${round(ni, 1)}`);
+  const rpe = s.sliders?.rpe;
+  if (rpe !== null && rpe !== undefined) bits.push(`RPE ${round(rpe, 1)}`);
+  return `<div class="sess"><span class="sw" style="background:${colorFor(data.types, s)}"></span>${esc(fmtDay(s.date))} · ${esc(s.title || labelFor(data.types, s))}<span class="muted"> ${esc(bits.filter(Boolean).join(" · "))}</span></div>`;
+}
+
+async function buildExport(data, nb, { photos = true } = {}) {
+  const K = NB_KINDS[nb.kind] || NB_KINDS.journal;
+  const list = entriesOf(data, nb.id).sort((a, b) => (a.date === b.date ? ((a.createdAt || "") < (b.createdAt || "") ? -1 : 1) : a.date < b.date ? -1 : 1));
+  const ms = measuresOf(nb);
+  const accent = PALETTES.soft.colors[SLOT.get(String(nb.color || "").toUpperCase()) ?? 0] || "#555";
+
+  const atts = async (items) => {
+    const out = [];
+    for (const a of items || []) {
+      if (a.kind === "sketch") out.push(`<figure>${sketchSvg(a)}</figure>`);
+      else if (photos) { const d = await photoData(a.id); if (d) out.push(`<figure><img src="${d}" alt=""></figure>`); }
+    }
+    return out.length ? `<div class="atts">${out.join("")}</div>` : "";
+  };
+
+  const entryHtml = async (e, withDate = true) => {
+    const vals = ms.map((m) => ({ m, v: valOf(e, m) })).filter((x) => x.v !== null)
+      .map(({ m, v }) => `<span class="val">${esc(m.name)} <b>${round(v, 1)}</b></span>`).join("");
+    const linked = (e.sessionIds || []).map((id) => data.sessions.find((s) => s.id === id)).filter(Boolean);
+    return `<article>
+      <header>${withDate ? `<time>${esc(fmtDay(e.date))} ${esc(parseISO(e.date).getFullYear())}</time>` : ""}${vals ? `<span class="vals">${vals}</span>` : ""}</header>
+      ${e.title ? `<h3>${esc(e.title)}</h3>` : ""}
+      ${e.body ? `<div class="body">${mdToHtml(e.body)}</div>` : ""}
+      ${await atts(e.attachments)}
+      ${linked.length ? `<div class="linked">${linked.map((s) => sessionLine(data, s)).join("")}</div>` : ""}
+    </article>`;
+  };
+
+  let main = "";
+  if ((nb.body || "").trim() || (nb.attachments || []).length) {
+    main += `<section class="notes">${nb.kind === "page" ? "" : `<h2>${nb.kind === "trip" ? "Trip notes" : "Notes"}</h2>`}<div class="body">${mdToHtml(nb.body)}</div>${await atts(nb.attachments)}</section>`;
+  }
+
+  if (nb.kind === "journal") {
+    if (nb.track) { const c = chartSvg(data, nb, list); if (c) main = `<section>${c}</section>` + main; }
+    if (list.length) {
+      main += `<h2>Entries</h2>`;
+      for (const e of list) main += await entryHtml(e);
+    }
+  }
+
+  if (nb.kind === "trip" && nb.from && nb.to) {
+    const ss = sessionsBetween(data, nb.from, nb.to);
+    const t = tripTotals(ss);
+    main = `<div class="tiles"><div><b>${ss.length}</b>sessions</div><div><b>${t.km ? round(t.km, 1) : "–"}</b>km</div><div><b>${t.up ? round(t.up, 0) : "–"}</b>m climbed</div></div>` + main;
+    let i = 0;
+    for (let d = parseISO(nb.from); fmtISO(d) <= nb.to; d = addDays(d, 1)) {
+      const iso = fmtISO(d); i++;
+      const daySs = ss.filter((s) => s.date === iso);
+      const dayEs = list.filter((e) => e.date === iso);
+      main += `<section class="day"><h2><span style="color:${accent}">Day ${i}</span> <small>${esc(fmtDay(iso))}</small></h2>
+        ${daySs.map((s) => sessionLine(data, s)).join("")}
+        ${daySs.length || dayEs.length ? "" : `<p class="muted">Rest day, or nothing logged.</p>`}`;
+      for (const e of dayEs) main += await entryHtml(e, false);
+      main += `</section>`;
+    }
+    const outside = list.filter((e) => e.date < nb.from || e.date > nb.to);
+    if (outside.length) { main += `<h2>Before and after</h2>`; for (const e of outside) main += await entryHtml(e); }
+  }
+
+  const sub = [K.label,
+    nb.kind === "trip" && nb.from ? `${fmtDay(nb.from)} – ${fmtDay(nb.to)} ${parseISO(nb.to).getFullYear()}` : "",
+    nb.kind === "journal" && list.length ? `${list.length} entries, ${fmtShort(list[0].date)} – ${fmtShort(list[list.length - 1].date)} ${parseISO(list[list.length - 1].date).getFullYear()}` : "",
+  ].filter(Boolean).join(" · ");
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(nb.name)}</title>
+<style>
+:root{--ink:#161616;--muted:#6b6b66;--line:#e4e4e0;--paper:#fbfbf9;--accent:${accent}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:32px 20px 56px}
+.top{border-left:4px solid var(--accent);padding-left:14px;margin-bottom:28px}
+h1{font-size:26px;line-height:1.2;margin:0 0 4px;text-wrap:balance}
+h2{font-size:17px;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h2 small{font-weight:400;color:var(--muted);font-size:13px}
+h3{font-size:16px;margin:4px 0}
+h4{font-size:15px;margin:14px 0 4px}
+p{margin:4px 0}
+.muted{color:var(--muted)}.small{font-size:12px}
+.gap{height:6px}
+.li{display:flex;gap:8px;margin:2px 0}.li .dot{color:var(--muted);min-width:14px}
+.li .box{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-top:3px;flex:none;border:1.5px solid var(--muted);border-radius:3px;font-size:11px;color:#fff}
+.li.done .box{background:var(--accent);border-color:var(--accent)}.li.done{color:var(--muted);text-decoration:line-through}
+article{padding:14px 0;border-bottom:1px solid var(--line);break-inside:avoid}
+article header{display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap}
+time{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.vals{display:flex;gap:6px;flex-wrap:wrap}.val{font-size:12px;border:1px solid var(--line);border-radius:99px;padding:1px 8px;color:var(--muted)}.val b{color:var(--ink)}
+.linked{margin-top:8px}
+.sess{font-size:13px;margin:3px 0;font-variant-numeric:tabular-nums}.sw{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.atts{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:10px}
+figure{margin:0}figure img,.sketch{width:100%;border-radius:8px;border:1px solid var(--line);background:#fff;display:block}
+.chart{width:100%;height:auto;font-size:11px;fill:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:6px 0 2px}
+.legend i{display:inline-block;width:16px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.legend i.dash{height:0;border-top:2px dashed #8a8a85}.legend i.bar{width:9px;height:9px;background:#c9c9c4}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.tiles div{border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
+.tiles b{display:block;font-size:22px;color:var(--ink);font-weight:500}
+.day article{border-bottom:0;padding:8px 0 0}
+footer{margin-top:40px;font-size:12px;color:var(--muted)}
+@media print{body{background:#fff}main{padding:0}h2{break-after:avoid}}
+</style></head><body><main>
+<div class="top"><h1>${esc(nb.name)}</h1><div class="muted">${esc(sub)}</div></div>
+${main || `<p class="muted">Nothing written yet.</p>`}
+<footer>Exported from DayLoad on ${esc(fmtDay(todayISO()))} ${new Date().getFullYear()}.</footer>
+</main></body></html>`;
+}
+
+function ExportSheet({ data, nb, onClose }) {
+  const [photos, setPhotos] = useState(true);
+  const [html, setHtml] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const hasPhotos = [...(nb.attachments || []), ...entriesOf(data, nb.id).flatMap((e) => e.attachments || [])].some((a) => a.kind === "photo");
+
+  useEffect(() => {
+    let live = true;
+    setHtml(null);
+    buildExport(data, nb, { photos }).then((h) => { if (live) setHtml(h); }).catch((e) => live && setMsg(e.message || "Could not build the page."));
+    return () => { live = false; };
+  }, [photos]);
+
+  const name = `${(nb.name || "notebook").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${todayISO()}.html`;
+  const file = () => new File([html], name, { type: "text/html" });
+
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setMsg("Saved to your downloads. Open it in any browser; print it from there for a PDF.");
+  };
+
+  // on a phone this opens the share sheet, straight to a message or an email
+  const share = async () => {
+    try {
+      const f = file();
+      if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: nb.name }); return; }
+      download();
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      download();
+    }
+  };
+
+  const mb = html ? new Blob([html]).size / 1048576 : 0;
+
+  return (
+    <div className="dl-root dl-bg dl-text fixed inset-0 z-50 flex flex-col">
+      <div className="mx-auto flex w-full max-w-2xl items-center justify-between border-b dl-line px-4 py-4">
+        <button onClick={onClose} className="dl-muted">Close</button>
+        <span className="font-medium">Export</span>
+        <span className="w-12" />
+      </div>
+      <div className="mx-auto w-full max-w-2xl space-y-3 px-4 pt-3">
+        <p className="text-sm dl-muted">One page with everything in it, to send to someone who doesn't use DayLoad. It opens in any browser and prints as a PDF.</p>
+        {hasPhotos && (
+          <label className="flex items-center justify-between gap-3 text-sm">
+            <span>Include photos <span className="dl-faint">(the small copies)</span></span>
+            <input type="checkbox" className="h-5 w-5" checked={photos} onChange={(e) => setPhotos(e.target.checked)} />
+          </label>
+        )}
+        <div className="flex gap-2">
+          <button disabled={!html} onClick={share} className="dl-accent flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium">
+            <Share2 size={16} /> Share
+          </button>
+          <button disabled={!html} onClick={download} className="flex flex-1 items-center justify-center gap-2 rounded-xl border dl-line py-3 text-sm dl-muted">
+            <Download size={16} /> Save file
+          </button>
+        </div>
+        <div className="text-xs dl-faint">{html ? `${name} · ${mb < 0.1 ? "<0.1" : round(mb, 1)} MB` : "Preparing…"}</div>
+        {msg && <div className="text-xs dl-muted">{msg}</div>}
+      </div>
+      <div className="mx-auto mt-3 w-full max-w-2xl flex-1 px-4 pb-4">
+        {html && <iframe title="Export preview" srcDoc={html} sandbox="" className="h-full w-full rounded-xl border dl-line" style={{ background: "#fbfbf9", minHeight: 300 }} />}
+      </div>
     </div>
   );
 }
